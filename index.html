@@ -339,7 +339,7 @@ const css = `
 .pl-btn.small { padding:4px 10px; font-size:13px; }
 .pl-btn[disabled] { opacity:.45; cursor:not-allowed; }
 .pl-table { width:100%; border-collapse:collapse; background:#fff; }
-.pl-table th { text-align:left; padding:9px 10px; font-weight:500; color:${T.sub}; border-bottom:1px solid ${T.line}; font-size:12.5px; letter-spacing:.04em; white-space:nowrap; background:#FCFAF6; position:sticky; top:0; }
+.pl-table th { text-align:left; padding:9px 10px; font-weight:500; color:${T.sub}; border-bottom:1px solid ${T.line}; font-size:12.5px; letter-spacing:.04em; white-space:nowrap; background:#FCFAF6; position:sticky; top:var(--pl-title-h, 56px); z-index:5; }
 .pl-table td { padding:9px 10px; border-bottom:1px solid ${T.line}; vertical-align:middle; }
 .pl-table tr:hover td { background:#FBF8F2; }
 .pl-table .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -432,9 +432,25 @@ function Empty({ text = "尚無資料", action }) {
   );
 }
 
+/* 主標題固定在頁面頂端；表格欄位標題（.pl-table th）固定在標題正下方，
+   高度用 ResizeObserver 量測寫入 CSS variable，讓兩層 sticky 不互相重疊 */
 function SectionTitle({ children, right }) {
+  const ref = useRef();
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => document.documentElement.style.setProperty("--pl-title-h", el.offsetHeight + "px");
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+    <div ref={ref} style={{
+      position: "sticky", top: 0, zIndex: 30, background: T.bg,
+      display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10,
+      paddingTop: 4, paddingBottom: 10, marginBottom: 4,
+    }}>
       <h2 className="pl-serif" style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>{children}</h2>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{right}</div>
     </div>
@@ -861,6 +877,8 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
   const rows = data.dailySales
     .filter((r) => monthOf(r.date) === month && r.storeId === curStore && perm.canSeeRecord(user, r))
     .sort((a, b) => cmpDate(b.date, a.date));
+  const totalRevenue = rows.reduce((a, r) => a + calcSales(r).net, 0);
+  const totalCash = rows.reduce((a, r) => a + calcSales(r).cash, 0);
 
   const openNew = () => setEditing({ ...SALES_EMPTY, id: null, date: todayStr(), storeId: curStore, status: "草稿" });
 
@@ -920,6 +938,13 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
       }>每日營收</SectionTitle>
 
       <StoreTabs stores={stores} value={curStore} onChange={setStoreTab} />
+
+      <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", justifyContent: "flex-end" }}>
+        <span style={{ color: T.sub, fontSize: 13 }}>
+          共 {rows.length} 筆・營業額合計 <b style={{ color: T.ink }}>{fmt(totalRevenue)}</b>
+          {" "}・現金（推算）合計 <b style={{ color: totalCash >= 0 ? T.green : T.red }}>{fmt(totalCash)}</b>
+        </span>
+      </div>
 
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
