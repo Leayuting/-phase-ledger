@@ -846,12 +846,28 @@ function StoreTabs({ stores, value, onChange }) {
   );
 }
 
-function MonthPicker({ value, onChange }) {
+/* onToday：選填。有精確日期篩選的頁面可傳入，點「今天」時跳到今天這一天；
+   沒傳入的頁面「今天」跟「本月」行為相同（都跳回當月）。 */
+function MonthPicker({ value, onChange, onToday }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
       <button className="pl-btn small" onClick={() => onChange(monthShift(value, -1))} aria-label="上一月">‹</button>
-      <div className="pl-serif" style={{ minWidth: 110, textAlign: "center", fontWeight: 600 }}>{monthLabel(value)}</div>
+      <button type="button" className="pl-btn small" style={{ minWidth: 118 }} onClick={() => setOpen((o) => !o)}>
+        📅 {monthLabel(value)} ▾
+      </button>
       <button className="pl-btn small" onClick={() => onChange(monthShift(value, 1))} aria-label="下一月">›</button>
+      <button className="pl-btn small" onClick={() => onChange(monthOf(todayStr()))}>本月</button>
+      <button className="pl-btn small" onClick={() => (onToday ? onToday(todayStr()) : onChange(monthOf(todayStr())))}>今天</button>
+      {open && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 39 }} onClick={() => setOpen(false)} />
+          <div className="pl-card" style={{ position: "absolute", top: "110%", left: 0, zIndex: 40, padding: 10 }}>
+            <input type="month" className="pl-input" value={value.replace("/", "-")}
+              onChange={(e) => { if (e.target.value) { onChange(e.target.value.replace("-", "/")); setOpen(false); } }} autoFocus />
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1408,7 +1424,8 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
 
       {kind === "expense" && <>
       <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-        <MonthPicker value={flt.month} onChange={(m) => setFlt({ ...flt, month: m, date: "" })} />
+        <MonthPicker value={flt.month} onChange={(m) => setFlt({ ...flt, month: m, date: "" })}
+          onToday={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })} />
         <input className="pl-input" style={{ width: 118 }} placeholder="精確日期 YYYY/MM/DD" value={flt.date} onChange={fset("date")} />
         {flt.date && <button className="pl-btn small" onClick={() => setFlt({ ...flt, date: "" })}>清除日期</button>}
         <select className="pl-input" style={{ width: 130 }} value={flt.categoryId} onChange={fset("categoryId")}>
@@ -1753,7 +1770,8 @@ function OrderModule({ data, update, user, users, logAudit }) {
     <div>
       <SectionTitle right={
         <>
-          <MonthPicker value={month} onChange={(m) => { setMonth(m); setDateFlt(""); }} />
+          <MonthPicker value={month} onChange={(m) => { setMonth(m); setDateFlt(""); }}
+            onToday={(d) => { setDateFlt(d); setMonth(monthOf(d)); }} />
           <input className="pl-input" style={{ width: 118 }} placeholder="精確日期 YYYY/MM/DD" value={dateFlt} onChange={(e) => setDateFlt(e.target.value)} />
           {dateFlt && <button className="pl-btn small" onClick={() => setDateFlt("")}>清除日期</button>}
           <select className="pl-input" style={{ width: 140 }} value={vFlt} onChange={(e) => setVFlt(e.target.value)}>
