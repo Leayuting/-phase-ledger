@@ -116,7 +116,7 @@ const monthShift = (m, k) => {
 /* 營收自動計算 */
 const calcSales = (s) => {
   const net = num(s.pos);                                             // 每日營業額
-  const paySum = num(s.coop) + num(s.card) + num(s.twpay) + num(s.linepay); // 非現金合計
+  const paySum = num(s.coop) + num(s.card) + num(s.twpay) + num(s.linepay) + num(s.online) + num(s.transfer); // 非現金合計
   const cash = net - paySum;                                          // 現金（推算）
   const diff = cash < 0 ? cash : 0;                                   // 非現金超過營業額 → 異常
   return { net, total: net, paySum, cash, diff };
@@ -844,7 +844,7 @@ function MonthPicker({ value, onChange }) {
    每日營收（日結）
 ──────────────────────────────────────────────*/
 const SALES_EMPTY = {
-  date: "", storeId: "", pos: "", coop: "", card: "", twpay: "", linepay: "",
+  date: "", storeId: "", pos: "", coop: "", card: "", twpay: "", linepay: "", online: "", transfer: "",
   note: "", diffReason: "",
 };
 
@@ -876,7 +876,7 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
     const rec = {
       ...form,
       pos: num(form.pos), coop: num(form.coop), card: num(form.card),
-      twpay: num(form.twpay), linepay: num(form.linepay),
+      twpay: num(form.twpay), linepay: num(form.linepay), online: num(form.online), transfer: num(form.transfer),
       status: submit ? "待審核" : form.status === "退回修改" ? "草稿" : form.status,
     };
     if (!rec.id) {
@@ -926,10 +926,11 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
           <thead><tr>
             <th>營業日期</th><th>門店</th><th className="num">每日營業額</th>
             <th className="num">店家配合</th><th className="num">信用卡</th><th className="num">台灣Pay</th><th className="num">LINE Pay</th>
+            <th className="num">線上商城</th><th className="num">轉帳</th>
             <th className="num">現金（推算）</th><th>日結狀態</th><th>建立／審核</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={11}><Empty text="本月尚無日結資料" action={<button className="pl-btn primary" onClick={openNew}>＋ 新增日結</button>} /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={13}><Empty text="本月尚無日結資料" action={<button className="pl-btn primary" onClick={openNew}>＋ 新增日結</button>} /></td></tr>}
             {rows.map((r) => {
               const c = calcSales(r);
               return (
@@ -941,6 +942,8 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
                   <td className="num">{r.card ? fmtN(r.card) : "—"}</td>
                   <td className="num">{r.twpay ? fmtN(r.twpay) : "—"}</td>
                   <td className="num">{r.linepay ? fmtN(r.linepay) : "—"}</td>
+                  <td className="num">{r.online ? fmtN(r.online) : "—"}</td>
+                  <td className="num">{r.transfer ? fmtN(r.transfer) : "—"}</td>
                   <td className="num">
                     {c.cash >= 0 ? fmtN(c.cash) : <Badge text={fmtN(c.cash)} tone="red" />}
                   </td>
@@ -1001,6 +1004,8 @@ function SalesForm({ form, setForm, stores, onSave, onClose, locked, adminEditLo
         <Field label="信用卡">{numIn("card")}</Field>
         <Field label="台灣Pay">{numIn("twpay")}</Field>
         <Field label="LINE Pay">{numIn("linepay")}</Field>
+        <Field label="線上商城">{numIn("online")}</Field>
+        <Field label="轉帳">{numIn("transfer")}</Field>
         <Field label="備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} disabled={locked} /></Field>
       </div>
 
@@ -2757,7 +2762,7 @@ function exportAllExcel(data, users) {
     const c = calcSales(r);
     return {
       營業日期: r.date, 門店: nameOf(r.storeId), 每日營業額: r.pos,
-      店家配合: r.coop, 信用卡: r.card, "台灣Pay": r.twpay, "LINE Pay": r.linepay,
+      店家配合: r.coop, 信用卡: r.card, "台灣Pay": r.twpay, "LINE Pay": r.linepay, 線上商城: r.online, 轉帳: r.transfer,
       非現金合計: c.paySum, "現金（推算）": c.cash,
       差異原因: r.diffReason, 日結狀態: r.status, 建立人: userName(r.createdBy), 審核人: userName(r.reviewedBy), 備註: r.note,
     };
@@ -2817,6 +2822,8 @@ const COL_ALIAS = {
   linepay: ["LINE Pay", "LINEPAY", "LinePay", "Line Pay"],
   twpay: ["台灣Pay", "台灣 Pay", "TaiwanPay", "台灣pay"],
   card: ["信用卡", "刷卡"],
+  online: ["線上商城", "官網", "線上"],
+  transfer: ["轉帳", "銀行轉帳"],
   category: ["支出類別", "類別", "收入類別", "科目"],
   item: ["支出品項", "品項", "項目", "收入項目", "品名", "內容", "摘要", "品項說明"],
   vendor: ["廠商", "供應商", "廠商名稱"],
@@ -2869,7 +2876,7 @@ function ImportModule({ data, update, user }) {
 
   const downloadTemplates = () => {
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["營業日期", "門店", "每日營業額", "店家配合", "信用卡", "台灣Pay", "LINE Pay", "備註"]]), "每日營收");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["營業日期", "門店", "每日營業額", "店家配合", "信用卡", "台灣Pay", "LINE Pay", "線上商城", "轉帳", "備註"]]), "每日營收");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["支出日期", "門店", "支出類別", "支出品項", "廠商", "金額", "付款方式", "付款人", "發票號碼", "備註"]]), "支出明細");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["收入日期", "門店", "收入類別", "收入項目", "金額", "收款方式", "經手人", "發票號碼", "備註"]]), "收入明細");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["叫貨日期", "門店", "廠商", "品項說明", "金額", "結帳方式", "預計付款日", "付款狀態", "發票狀態", "備註"]]), "廠商叫貨");
@@ -2918,7 +2925,7 @@ function ImportModule({ data, update, user }) {
       let rec = null;
 
       if (type === "sales") {
-        ["pos", "coop", "card", "twpay", "linepay"].forEach((k) => {
+        ["pos", "coop", "card", "twpay", "linepay", "online", "transfer"].forEach((k) => {
           const v = pickCol(raw, k); if (v !== "" && isNaN(num(v))) errs.push(`${COL_ALIAS[k][0]} 金額格式錯誤`);
         });
         const key = date + "|" + storeId;
@@ -2930,6 +2937,7 @@ function ImportModule({ data, update, user }) {
         rec = {
           date, storeId, pos: num(pickCol(raw, "pos")), coop: num(pickCol(raw, "coop")),
           card: num(pickCol(raw, "card")), twpay: num(pickCol(raw, "twpay")), linepay: num(pickCol(raw, "linepay")),
+          online: num(pickCol(raw, "online")), transfer: num(pickCol(raw, "transfer")),
           note: String(pickCol(raw, "note") || ""), diffReason: "", status: "草稿",
         };
         if (rec.storeId && calcSales(rec).cash < 0) warns.push(`非現金合計超過營業額 ${fmt(-calcSales(rec).cash)}，匯入後請補差異原因`);
@@ -3337,6 +3345,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
           <Field label="信用卡">{nIn("card")}</Field>
           <Field label="台灣Pay">{nIn("twpay")}</Field>
           <Field label="LINE Pay">{nIn("linepay")}</Field>
+          <Field label="線上商城">{nIn("online")}</Field>
+          <Field label="轉帳">{nIn("transfer")}</Field>
           <Field label="備註"><input className="pl-input" value={sf.note} onChange={set("note")} disabled={salesLocked} /></Field>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginTop: 12, background: "#FCFAF6", border: `1px solid ${T.line}`, borderRadius: 8, padding: 12 }}>
