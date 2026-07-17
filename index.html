@@ -2367,7 +2367,6 @@ function VendorMaster({ data, update }) {
     if (!v.name.trim()) return alert("請填寫廠商名稱");
     if (!v.id) {
       v.id = uid("v");
-      v.code = "V" + pad2(data.vendors.length + 1).padStart(3, "0");
       update((d) => ({ ...d, vendors: [...d.vendors, v] }));
     } else {
       update((d) => ({ ...d, vendors: d.vendors.map((x) => (x.id === v.id ? v : x)) }));
@@ -2381,17 +2380,28 @@ function VendorMaster({ data, update }) {
     if (!confirm(`確定刪除廠商「${v.name}」？`)) return;
     update((d) => ({ ...d, vendors: d.vendors.filter((x) => x.id !== v.id) }));
   };
+  const move = (idx, dir) => {
+    const j = idx + dir;
+    if (j < 0 || j >= data.vendors.length) return;
+    const arr = [...data.vendors];
+    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+    update((d) => ({ ...d, vendors: arr }));
+  };
   return (
     <div className="pl-card pl-scroll-x">
       <div style={{ padding: 12, borderBottom: `1px solid ${T.line}` }}>
-        <button className="pl-btn primary small" onClick={() => setEditing({ id: null, code: "", name: "", contact: "", phone: "", billing: "現結", monthlyDay: "", payMethod: "現金", active: true, note: "" })}>＋ 新增廠商</button>
+        <button className="pl-btn primary small" onClick={() => setEditing({ id: null, name: "", contact: "", phone: "", billing: "現結", monthlyDay: "", payMethod: "現金", active: true, note: "" })}>＋ 新增廠商</button>
       </div>
       <table className="pl-table">
-        <thead><tr><th>編號</th><th>廠商名稱</th><th>聯絡人</th><th>電話</th><th>結帳方式</th><th>月結日</th><th>預設付款</th><th>狀態</th><th>備註</th><th></th></tr></thead>
+        <thead><tr><th></th><th>廠商名稱</th><th>聯絡人</th><th>電話</th><th>結帳方式</th><th>月結日</th><th>預設付款</th><th>狀態</th><th>備註</th><th></th></tr></thead>
         <tbody>
-          {data.vendors.map((v) => (
+          {data.vendors.map((v, idx) => (
             <tr key={v.id}>
-              <td>{v.code}</td><td>{v.name}</td><td>{v.contact}</td><td>{v.phone}</td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                <button className="pl-btn small" disabled={idx === 0} onClick={() => move(idx, -1)} aria-label="上移">▲</button>
+                {" "}<button className="pl-btn small" disabled={idx === data.vendors.length - 1} onClick={() => move(idx, 1)} aria-label="下移">▼</button>
+              </td>
+              <td>{v.name}</td><td>{v.contact}</td><td>{v.phone}</td>
               <td>{v.billing}</td><td>{v.monthlyDay ? "每月 " + v.monthlyDay + " 日" : "—"}</td><td>{v.payMethod}</td>
               <td><Badge text={v.active ? "啟用中" : "停用"} tone={v.active ? "green" : "gray"} /></td>
               <td style={{ fontSize: 12.5, color: T.sub }}>{v.note}</td>
