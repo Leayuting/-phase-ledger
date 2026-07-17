@@ -340,6 +340,7 @@ const css = `
 .pl-btn[disabled] { opacity:.45; cursor:not-allowed; }
 .pl-table { width:100%; border-collapse:collapse; background:#fff; }
 .pl-table th { text-align:left; padding:9px 10px; font-weight:500; color:${T.sub}; border-bottom:1px solid ${T.line}; font-size:12.5px; letter-spacing:.04em; white-space:nowrap; background:#FCFAF6; position:sticky; top:var(--pl-title-h, 56px); z-index:5; }
+.pl-table-plain th { position:static; }
 .pl-table td { padding:9px 10px; border-bottom:1px solid ${T.line}; vertical-align:middle; }
 .pl-table tr:hover td { background:#FBF8F2; }
 .pl-table .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -3511,7 +3512,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
         {cardHead(`② 當日支出（${dayExp.length} 筆・${fmt(expSum)}）`, null)}
         <div className="pl-scroll-x">
-          <table className="pl-table">
+          <table className="pl-table pl-table-plain">
             <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th>付款人</th><th>狀態</th><th></th></tr></thead>
             <tbody>
               {dayExp.map((r) => (
@@ -3551,7 +3552,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
         {cardHead(`③ 當日收入（${dayInc.length} 筆・${fmt(incSum)}）`, null)}
         <div className="pl-scroll-x">
-          <table className="pl-table">
+          <table className="pl-table pl-table-plain">
             <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th>經手人</th><th>狀態</th><th></th></tr></thead>
             <tbody>
               {dayInc.map((r) => (
@@ -3591,7 +3592,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
         {cardHead(`④ 當日叫貨（${dayOrd.length} 筆・${fmt(ordSum)}）`, null)}
         <div className="pl-scroll-x">
-          <table className="pl-table">
+          <table className="pl-table pl-table-plain">
             <thead><tr><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>結帳</th><th>預計付款日</th><th>付款狀態</th><th></th></tr></thead>
             <tbody>
               {dayOrd.map((r) => (
