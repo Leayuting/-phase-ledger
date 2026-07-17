@@ -2354,7 +2354,7 @@ function MasterModule({ data, update, user, profiles }) {
       {tab === "vendors" && <VendorMaster data={data} update={update} />}
       {tab === "categories" && <CategoryMaster data={data} update={update} />}
       {tab === "fixed" && <FixedMaster data={data} update={update} />}
-      {tab === "stores" && <StoreMaster data={data} update={update} />}
+      {tab === "stores" && <StoreMaster data={data} update={update} profiles={profiles} />}
       {tab === "targets" && <TargetMaster data={data} update={update} />}
       {tab === "users" && <UserMaster data={data} profiles={profiles} />}
     </div>
@@ -2374,6 +2374,13 @@ function VendorMaster({ data, update }) {
     }
     setEditing(null);
   };
+  const usageOf = (v) => data.orders.filter((o) => o.vendorId === v.id).length + data.expenses.filter((e) => e.vendorId === v.id).length;
+  const remove = (v) => {
+    const n = usageOf(v);
+    if (n > 0) return alert(`「${v.name}」使用中（共 ${n} 筆叫貨／支出關聯），無法刪除。若不再合作可改為停用。`);
+    if (!confirm(`確定刪除廠商「${v.name}」？`)) return;
+    update((d) => ({ ...d, vendors: d.vendors.filter((x) => x.id !== v.id) }));
+  };
   return (
     <div className="pl-card pl-scroll-x">
       <div style={{ padding: 12, borderBottom: `1px solid ${T.line}` }}>
@@ -2388,7 +2395,10 @@ function VendorMaster({ data, update }) {
               <td>{v.billing}</td><td>{v.monthlyDay ? "每月 " + v.monthlyDay + " 日" : "—"}</td><td>{v.payMethod}</td>
               <td><Badge text={v.active ? "啟用中" : "停用"} tone={v.active ? "green" : "gray"} /></td>
               <td style={{ fontSize: 12.5, color: T.sub }}>{v.note}</td>
-              <td><button className="pl-btn small" onClick={() => setEditing({ ...v })}>編輯</button></td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                <button className="pl-btn small" onClick={() => setEditing({ ...v })}>編輯</button>
+                {" "}<button className="pl-btn small danger" disabled={usageOf(v) > 0} title={usageOf(v) > 0 ? "使用中無法刪除" : ""} onClick={() => remove(v)}>刪除</button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -2430,6 +2440,7 @@ function VendorMaster({ data, update }) {
 function CategoryMaster({ data, update }) {
   const [tab, setTab] = useState("exp"); // exp | inc
   const [name, setName] = useState("");
+  const [editing, setEditing] = useState(null); // { id, name }
   const isExp = tab === "exp";
   const list = isExp ? data.categories : (data.incomeCategories || []);
   const key = isExp ? "categories" : "incomeCategories";
@@ -2467,6 +2478,13 @@ function CategoryMaster({ data, update }) {
     update((d) => ({ ...d, [key]: d[key].map((x) => x.id === c.id ? { ...x, active: !x.active } : x) }));
   };
   const toggleFixed = (c) => update((d) => ({ ...d, categories: d.categories.map((x) => x.id === c.id ? { ...x, fixed: !x.fixed } : x) }));
+  const rename = () => {
+    const nm = editing.name.trim();
+    if (!nm) return alert("名稱不可空白");
+    if (list.some((c) => c.id !== editing.id && c.name === nm)) return alert(`類別「${nm}」已存在。`);
+    update((d) => ({ ...d, [key]: d[key].map((x) => x.id === editing.id ? { ...x, name: nm } : x) }));
+    setEditing(null);
+  };
 
   return (
     <div>
@@ -2498,6 +2516,7 @@ function CategoryMaster({ data, update }) {
                 </span>
                 <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                   {isExp && <button className="pl-btn small" title="固定支出會納入月報固定支出統計" onClick={() => toggleFixed(c)}>{c.fixed ? "固定" : "一般"}</button>}
+                  <button className="pl-btn small" disabled={c.id === ORDER_CAT_ID} title={c.id === ORDER_CAT_ID ? "系統保留類別，無法編輯名稱" : ""} onClick={() => setEditing({ id: c.id, name: c.name })}>編輯</button>
                   <button className="pl-btn small" disabled={c.id === ORDER_CAT_ID} title={c.id === ORDER_CAT_ID ? "系統保留類別，用於廠商叫貨自動歸類，無法停用" : ""} onClick={() => toggle(c)}>{c.active ? "停用" : "啟用"}</button>
                   <button className="pl-btn small danger" disabled={u.n > 0 || c.id === ORDER_CAT_ID} title={c.id === ORDER_CAT_ID ? "系統保留類別，用於廠商叫貨自動歸類，無法刪除" : u.n > 0 ? "使用中無法刪除" : ""} onClick={() => remove(c)}>刪除</button>
                 </span>
@@ -2506,6 +2525,19 @@ function CategoryMaster({ data, update }) {
           })}
         </div>
       </div>
+
+      {editing && (
+        <Modal title="編輯類別名稱" onClose={() => setEditing(null)} width={420}>
+          <Field label="類別名稱" required>
+            <input className="pl-input" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === "Enter") rename(); }} autoFocus />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button className="pl-btn" onClick={() => setEditing(null)}>取消</button>
+            <button className="pl-btn primary" onClick={rename}>儲存</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -2583,8 +2615,37 @@ function FixedMaster({ data, update }) {
   );
 }
 
-function StoreMaster({ data, update }) {
+function StoreMaster({ data, update, profiles }) {
   const [name, setName] = useState("");
+  const [editing, setEditing] = useState(null); // { id, name }
+
+  const usageOf = (s) => {
+    const n = data.dailySales.filter((r) => r.storeId === s.id).length
+      + data.expenses.filter((r) => r.storeId === s.id).length
+      + (data.incomes || []).filter((r) => r.storeId === s.id).length
+      + data.orders.filter((r) => r.storeId === s.id).length
+      + (data.fixedItems || []).filter((r) => r.storeId === s.id).length;
+    const children = data.stores.filter((x) => x.parentId === s.id).length;
+    const usersAssigned = (profiles || []).filter((p) => p.storeId === s.id).length;
+    return { n: n + children + usersAssigned, children, usersAssigned };
+  };
+  const remove = (s) => {
+    const u = usageOf(s);
+    if (u.n > 0) {
+      const extra = [u.children ? `${u.children} 個附屬門店` : "", u.usersAssigned ? `${u.usersAssigned} 位使用者` : ""].filter(Boolean).join("、");
+      return alert(`「${s.name}」使用中${extra ? `（另有 ${extra} 指向此門店）` : ""}，無法刪除。若不再使用可改為停用。`);
+    }
+    if (!confirm(`確定刪除門店／部門「${s.name}」？`)) return;
+    update((d) => ({ ...d, stores: d.stores.filter((x) => x.id !== s.id) }));
+  };
+  const rename = () => {
+    const nm = editing.name.trim();
+    if (!nm) return alert("名稱不可空白");
+    if (data.stores.some((x) => x.id !== editing.id && x.name === nm)) return alert(`門店「${nm}」已存在。`);
+    update((d) => ({ ...d, stores: d.stores.map((x) => x.id === editing.id ? { ...x, name: nm } : x) }));
+    setEditing(null);
+  };
+
   return (
     <div className="pl-card">
       <div style={{ padding: 12, borderBottom: `1px solid ${T.line}`, display: "flex", gap: 8 }}>
@@ -2594,19 +2655,37 @@ function StoreMaster({ data, update }) {
       <table className="pl-table">
         <thead><tr><th>名稱</th><th>類型</th><th>狀態</th><th></th></tr></thead>
         <tbody>
-          {data.stores.map((s) => (
-            <tr key={s.id}>
-              <td>{s.name}</td>
-              <td>{s.retail ? "門市（列入營收）" : "後勤／共用"}</td>
-              <td><Badge text={s.active ? "啟用中" : "停用"} tone={s.active ? "green" : "gray"} /></td>
-              <td>
-                <button className="pl-btn small" onClick={() => update((d) => ({ ...d, stores: d.stores.map((x) => x.id === s.id ? { ...x, retail: !x.retail } : x) }))}>切換類型</button>
-                {" "}<button className="pl-btn small" onClick={() => update((d) => ({ ...d, stores: d.stores.map((x) => x.id === s.id ? { ...x, active: !x.active } : x) }))}>{s.active ? "停用" : "啟用"}</button>
-              </td>
-            </tr>
-          ))}
+          {data.stores.map((s) => {
+            const u = usageOf(s);
+            return (
+              <tr key={s.id}>
+                <td>{s.name}</td>
+                <td>{s.retail ? "門市（列入營收）" : "後勤／共用"}</td>
+                <td><Badge text={s.active ? "啟用中" : "停用"} tone={s.active ? "green" : "gray"} /></td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <button className="pl-btn small" onClick={() => setEditing({ id: s.id, name: s.name })}>編輯</button>
+                  {" "}<button className="pl-btn small" onClick={() => update((d) => ({ ...d, stores: d.stores.map((x) => x.id === s.id ? { ...x, retail: !x.retail } : x) }))}>切換類型</button>
+                  {" "}<button className="pl-btn small" onClick={() => update((d) => ({ ...d, stores: d.stores.map((x) => x.id === s.id ? { ...x, active: !x.active } : x) }))}>{s.active ? "停用" : "啟用"}</button>
+                  {" "}<button className="pl-btn small danger" disabled={u.n > 0} title={u.n > 0 ? "使用中無法刪除" : ""} onClick={() => remove(s)}>刪除</button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+
+      {editing && (
+        <Modal title="編輯門店名稱" onClose={() => setEditing(null)} width={420}>
+          <Field label="門店／部門名稱" required>
+            <input className="pl-input" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === "Enter") rename(); }} autoFocus />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button className="pl-btn" onClick={() => setEditing(null)}>取消</button>
+            <button className="pl-btn primary" onClick={rename}>儲存</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
