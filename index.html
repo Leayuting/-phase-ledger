@@ -3708,13 +3708,26 @@ function App() {
   const [session, setSession] = useState(undefined);
   const [profiles, setProfiles] = useState([]);
   const [data, setData] = useState(null);
-  const [page, setPage] = useState("dashboard");
+  const [page, setPage] = useState(() => {
+    const h = window.location.hash.replace("#", "");
+    return NAV.some(([k]) => k === h) ? h : "dashboard";
+  });
   const [month, setMonth] = useState(monthOf(todayStr()));
   const [storeFilter, setStoreFilter] = useState(null);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
   const saveTimer = useRef(null);
   const firstLoad = useRef(true);
   const applyingRemote = useRef(false); // 遠端 Realtime 同步進來的變動，避免又存回去造成迴圈
+
+  /* 瀏覽器上一頁／下一頁（或重新整理後網址列仍帶著 #頁面 hash）時同步目前頁面 */
+  useEffect(() => {
+    const onHash = () => {
+      const h = window.location.hash.replace("#", "");
+      if (NAV.some(([k]) => k === h)) setPage(h);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   /* 登入狀態：初始確認 + 監聽變化 */
   useEffect(() => {
@@ -3865,7 +3878,7 @@ function App() {
     }));
   };
 
-  const goto = (p) => { setPage(p); window.scrollTo(0, 0); };
+  const goto = (p) => { setPage(p); window.location.hash = p; window.scrollTo(0, 0); };
 
   const logout = () => sb.auth.signOut();
 
