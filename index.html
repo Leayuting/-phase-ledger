@@ -892,6 +892,7 @@ const SALES_EMPTY = {
 function SalesModule({ data, update, user, users, logAudit, logApproval }) {
   const [month, setMonth] = useState(monthOf(todayStr()));
   const [editing, setEditing] = useState(null);
+  const [selected, setSelected] = useState(new Set());
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && s.retail && (!scope || scope.includes(s.id)));
   const [storeTab, setStoreTab] = useState("");
@@ -953,6 +954,20 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
     update((d) => ({ ...d, dailySales: d.dailySales.filter((r) => r.id !== rec.id) }));
   };
 
+  const selRows = rows.filter((r) => selected.has(r.id));
+  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
+  const batchRemove = () => {
+    const locked = selRows.filter((r) => r.status === "已審核" && !perm.isAdmin(user));
+    const targets = selRows.filter((r) => !locked.includes(r));
+    if (targets.length === 0) return alert("選取的項目都是已審核資料，無法刪除。");
+    if (!confirm(`確定刪除選取的 ${targets.length} 筆日結資料？${locked.length ? `（另有 ${locked.length} 筆已審核，不會刪除）` : ""}`)) return;
+    targets.forEach((r) => logAudit("每日營收", r.id, r, { ...r, deleted: true }));
+    const ids = new Set(targets.map((r) => r.id));
+    update((d) => ({ ...d, dailySales: d.dailySales.filter((r) => !ids.has(r.id)) }));
+    setSelected(new Set());
+  };
+
   return (
     <div>
       <SectionTitle right={
@@ -964,7 +979,14 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
 
       <StoreTabs stores={stores} value={curStore} onChange={setStoreTab} />
 
-      <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", justifyContent: "flex-end" }}>
+      <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", justifyContent: "flex-end" }}>
+        {selRows.length > 0 && (
+          <span style={{ marginRight: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13 }}>已選 {selRows.length} 筆</span>
+            <button className="pl-btn small danger" onClick={batchRemove}>批次刪除</button>
+            <button className="pl-btn small" onClick={() => setSelected(new Set())}>取消選取</button>
+          </span>
+        )}
         <span style={{ color: T.sub, fontSize: 13 }}>
           共 {rows.length} 筆・營業額合計 <b style={{ color: T.ink }}>{fmt(totalRevenue)}</b>
           {" "}・現金（推算）合計 <b style={{ color: totalCash >= 0 ? T.green : T.red }}>{fmt(totalCash)}</b>
@@ -974,17 +996,19 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
           <thead><tr>
+            <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
             <th>營業日期</th><th>門店</th><th className="num">每日營業額</th>
             <th className="num">店家配合</th><th className="num">信用卡</th><th className="num">台灣Pay</th><th className="num">LINE Pay</th>
             <th className="num">線上商城</th><th className="num">轉帳</th>
             <th className="num">現金（推算）</th><th>日結狀態</th><th>建立／審核</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={13}><Empty text="本月尚無日結資料" action={<button className="pl-btn primary" onClick={openNew}>＋ 新增日結</button>} /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={14}><Empty text="本月尚無日結資料" action={<button className="pl-btn primary" onClick={openNew}>＋ 新增日結</button>} /></td></tr>}
             {rows.map((r) => {
               const c = calcSales(r);
               return (
                 <tr key={r.id}>
+                  <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
                   <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
                   <td>{nameOf(r.storeId)}</td>
                   <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.pos)}</td>
@@ -1312,6 +1336,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   const [editing, setEditing] = useState(null);
   const [batchOpen, setBatchOpen] = useState(false);
   const [kind, setKind] = useState("expense");
+  const [selected, setSelected] = useState(new Set());
   const [flt, setFlt] = useState({ month: monthOf(todayStr()), date: "", storeId: "", categoryId: "", vendorId: "", payer: "", status: "", min: "", max: "" });
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
@@ -1372,6 +1397,20 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
     if (!confirm(`確定刪除支出「${rec.item}」（${rec.date}）？`)) return;
     logAudit("每日支出", rec.id, rec, { ...rec, deleted: true });
     update((d) => ({ ...d, expenses: d.expenses.filter((r) => r.id !== rec.id) }));
+  };
+
+  const selRows = rows.filter((r) => selected.has(r.id));
+  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
+  const batchRemove = () => {
+    const locked = selRows.filter((r) => r.status === "已通過" && !perm.isAdmin(user));
+    const targets = selRows.filter((r) => !locked.includes(r));
+    if (targets.length === 0) return alert("選取的項目都是已通過資料，無法刪除。");
+    if (!confirm(`確定刪除選取的 ${targets.length} 筆支出？${locked.length ? `（另有 ${locked.length} 筆已通過，不會刪除）` : ""}`)) return;
+    targets.forEach((r) => logAudit("每日支出", r.id, r, { ...r, deleted: true }));
+    const ids = new Set(targets.map((r) => r.id));
+    update((d) => ({ ...d, expenses: d.expenses.filter((r) => !ids.has(r.id)) }));
+    setSelected(new Set());
   };
 
   const fset = (k) => (e) => setFlt({ ...flt, [k]: e.target.value });
@@ -1454,16 +1493,26 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
         <div style={{ marginLeft: "auto", color: T.sub, fontSize: 13 }}>共 {rows.length} 筆・合計 <b style={{ color: T.ink }}>{fmt(total)}</b></div>
       </div>
 
+      {selRows.length > 0 && (
+        <div className="pl-card no-print" style={{ padding: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13 }}>已選 {selRows.length} 筆</span>
+          <button className="pl-btn small danger" onClick={batchRemove}>批次刪除</button>
+          <button className="pl-btn small" onClick={() => setSelected(new Set())}>取消選取</button>
+        </div>
+      )}
+
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
           <thead><tr>
+            <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
             <th>日期</th><th>門店／部門</th><th>類別</th><th>品項</th><th>廠商</th>
             <th className="num">金額</th><th>付款方式</th><th>付款人</th><th>代墊</th><th>發票</th><th>附件</th><th>狀態</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={13}><Empty text="查無符合條件的支出" /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={14}><Empty text="查無符合條件的支出" /></td></tr>}
             {rows.map((r) => (
               <tr key={r.id}>
+                <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
                 <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
                 <td>{nameOf(r.storeId)}</td>
                 <td>{catOf(r.categoryId)}</td>
@@ -1513,6 +1562,7 @@ const INC_EMPTY = {
 function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logApproval }) {
   const [editing, setEditing] = useState(null);
   const [month, setMonth] = useState(monthOf(todayStr()));
+  const [selected, setSelected] = useState(new Set());
   const cats = data.incomeCategories.filter((c) => c.active);
   const catOf = (id) => data.incomeCategories.find((c) => c.id === id)?.name || "—";
 
@@ -1557,6 +1607,20 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
     update((d) => ({ ...d, incomes: d.incomes.filter((r) => r.id !== rec.id) }));
   };
 
+  const selRows = rows.filter((r) => selected.has(r.id));
+  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
+  const batchRemove = () => {
+    const locked = selRows.filter((r) => r.status === "已通過" && !perm.isAdmin(user));
+    const targets = selRows.filter((r) => !locked.includes(r));
+    if (targets.length === 0) return alert("選取的項目都是已通過資料，無法刪除。");
+    if (!confirm(`確定刪除選取的 ${targets.length} 筆收入？${locked.length ? `（另有 ${locked.length} 筆已通過，不會刪除）` : ""}`)) return;
+    targets.forEach((r) => logAudit("門店收入", r.id, r, { ...r, deleted: true }));
+    const ids = new Set(targets.map((r) => r.id));
+    update((d) => ({ ...d, incomes: d.incomes.filter((r) => !ids.has(r.id)) }));
+    setSelected(new Set());
+  };
+
   return (
     <div>
       <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
@@ -1570,16 +1634,26 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
         </div>
       </div>
 
+      {selRows.length > 0 && (
+        <div className="pl-card no-print" style={{ padding: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13 }}>已選 {selRows.length} 筆</span>
+          <button className="pl-btn small danger" onClick={batchRemove}>批次刪除</button>
+          <button className="pl-btn small" onClick={() => setSelected(new Set())}>取消選取</button>
+        </div>
+      )}
+
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
           <thead><tr>
+            <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
             <th>日期</th><th>類別</th><th>項目</th>
             <th className="num">金額</th><th>收款方式</th><th>經手人</th><th>發票</th><th>附件</th><th>狀態</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={10}><Empty text="本月尚無收入紀錄" /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={11}><Empty text="本月尚無收入紀錄" /></td></tr>}
             {rows.map((r) => (
               <tr key={r.id}>
+                <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
                 <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
                 <td>{catOf(r.categoryId)}</td>
                 <td>{r.item}</td>
@@ -1730,6 +1804,7 @@ function OrderModule({ data, update, user, users, logAudit }) {
   const [view, setView] = useState("orders"); // orders | settle
   const [openVendor, setOpenVendor] = useState(null);
   const [batchOpen, setBatchOpen] = useState(false);
+  const [selected, setSelected] = useState(new Set());
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
   const [storeTab, setStoreTab] = useState("");
@@ -1774,6 +1849,18 @@ function OrderModule({ data, update, user, users, logAudit }) {
     if (!confirm(`確定刪除 ${rec.date} ${venOf(rec.vendorId)} 的叫貨？`)) return;
     logAudit("廠商叫貨", rec.id, rec, { ...rec, deleted: true });
     update((d) => ({ ...d, orders: d.orders.filter((o) => o.id !== rec.id) }));
+  };
+
+  const selRows = rows.filter((r) => selected.has(r.id));
+  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
+  const batchRemove = () => {
+    if (selRows.length === 0) return;
+    if (!confirm(`確定刪除選取的 ${selRows.length} 筆叫貨紀錄？`)) return;
+    selRows.forEach((r) => logAudit("廠商叫貨", r.id, r, { ...r, deleted: true }));
+    const ids = new Set(selRows.map((r) => r.id));
+    update((d) => ({ ...d, orders: d.orders.filter((o) => !ids.has(o.id)) }));
+    setSelected(new Set());
   };
 
   return (
@@ -1852,18 +1939,28 @@ function OrderModule({ data, update, user, users, logAudit }) {
         </div>
       </div>
 
+      {selRows.length > 0 && (
+        <div className="pl-card no-print" style={{ padding: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13 }}>已選 {selRows.length} 筆</span>
+          <button className="pl-btn small danger" onClick={batchRemove}>批次刪除</button>
+          <button className="pl-btn small" onClick={() => setSelected(new Set())}>取消選取</button>
+        </div>
+      )}
+
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
           <thead><tr>
+            <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
             <th>日期</th><th>使用門店</th><th>廠商</th><th>品項說明</th>
             <th className="num">金額</th><th>結帳方式</th><th>預計付款日</th><th>付款狀態</th><th>發票狀態</th><th>附件</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={11}><Empty text="本月尚無叫貨紀錄" /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={12}><Empty text="本月尚無叫貨紀錄" /></td></tr>}
             {rows.map((r) => {
               const isOverdue = r.payStatus !== "已付款" && r.dueDate && cmpDate(r.dueDate, today) < 0;
               return (
                 <tr key={r.id}>
+                  <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
                   <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
                   <td>{nameOf(r.storeId)}</td>
                   <td>{venOf(r.vendorId)}</td>
@@ -2078,6 +2175,7 @@ const AR_EMPTY = {
 function ARModule({ data, update, user, logAudit }) {
   const [editing, setEditing] = useState(null);
   const [showAll, setShowAll] = useState(true);
+  const [selected, setSelected] = useState(new Set());
   const today = todayStr();
   if (!perm.canAR(user)) return <Empty text="應收帳款僅開放會計與系統管理者查看。" />;
 
@@ -2115,6 +2213,18 @@ function ARModule({ data, update, user, logAudit }) {
     update((d) => ({ ...d, receivables: d.receivables.filter((r) => r.id !== rec.id) }));
   };
 
+  const selRows = rows.filter((r) => selected.has(r.id));
+  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
+  const batchRemove = () => {
+    if (selRows.length === 0) return;
+    if (!confirm(`確定刪除選取的 ${selRows.length} 筆應收帳款？`)) return;
+    selRows.forEach((r) => logAudit("應收帳款", r.id, r, { ...r, deleted: true }));
+    const ids = new Set(selRows.map((r) => r.id));
+    update((d) => ({ ...d, receivables: d.receivables.filter((r) => !ids.has(r.id)) }));
+    setSelected(new Set());
+  };
+
   return (
     <div>
       <SectionTitle right={
@@ -2130,20 +2240,30 @@ function ARModule({ data, update, user, logAudit }) {
         <KPI label="應收未收合計" value={fmt(totalUnpaid)} tone={totalUnpaid > 0 ? undefined : "green"} />
       </div>
 
+      {selRows.length > 0 && (
+        <div className="pl-card no-print" style={{ padding: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13 }}>已選 {selRows.length} 筆</span>
+          <button className="pl-btn small danger" onClick={batchRemove}>批次刪除</button>
+          <button className="pl-btn small" onClick={() => setSelected(new Set())}>取消選取</button>
+        </div>
+      )}
+
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
           <thead><tr>
+            <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
             <th>編號</th><th>建立日期</th><th>客戶／公司</th><th>發票號碼</th>
             <th className="num">請款金額</th><th className="num">已收金額</th><th className="num">未收金額</th>
             <th>到期日</th><th>收款狀態</th><th>對帳單</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={11}><Empty text="尚無應收帳款" /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={12}><Empty text="尚無應收帳款" /></td></tr>}
             {rows.map((r) => {
               const unpaid = num(r.amount) - num(r.received);
               const isOverdue = r.dueDate && cmpDate(r.dueDate, today) < 0 && unpaid > 0 && r.status !== "呆帳";
               return (
                 <tr key={r.id}>
+                  <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
                   <td style={{ whiteSpace: "nowrap" }}>{r.no}</td>
                   <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
                   <td>{r.customer}</td>
