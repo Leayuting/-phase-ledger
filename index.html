@@ -3452,7 +3452,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   const catOf = (id) => data.categories.find((c) => c.id === id)?.name || "—";
   const incCatOf = (id) => (data.incomeCategories || []).find((c) => c.id === id)?.name || "—";
 
-  /* ── 日結 ── */
+  /* ── 日結營收表單 ── */
   const existing = data.dailySales.find((r) => r.date === date && r.storeId === curStore);
   const [sf, setSf] = useState(null);
   useEffect(() => {
@@ -3461,26 +3461,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   }, [curStore, date, existing?.id]);
 
   const salesLocked = sf && sf.status === "已審核" && !perm.isAdmin(user);
-  const saveSales = (submit) => {
-    const c = calcSales(sf);
-    if (num(sf.pos) <= 0 && submit) return alert("請填寫每日營業額");
-    if (c.cash < 0 && submit && !sf.diffReason.trim()) return alert("非現金合計超過營業額，請填寫差異原因。");
-    const dup = data.dailySales.find((r) => r.date === date && r.storeId === curStore && r.id !== sf.id);
-    if (dup) return alert("同門店同一天僅能有一筆日結。");
-    const rec = { ...sf, date, storeId: curStore, status: submit ? "待審核" : sf.status === "退回修改" ? "草稿" : sf.status || "草稿" };
-    if (!rec.id) {
-      rec.id = uid("ds"); rec.createdBy = user.id; rec.createdAt = nowStamp(); rec.reviewedBy = null; rec.reviewedAt = null;
-      update((d) => ({ ...d, dailySales: [...d.dailySales, rec] }));
-    } else {
-      const old = data.dailySales.find((r) => r.id === rec.id);
-      if (old.status === "已審核") {
-        if (!perm.isAdmin(user)) return alert("已審核日結僅系統管理者可修改。");
-        logAudit("每日營收", rec.id, old, rec);
-      }
-      update((d) => ({ ...d, dailySales: d.dailySales.map((r) => (r.id === rec.id ? rec : r)) }));
-    }
-    setSf(rec);
-  };
+  /* 舊資料若仍停留在待審核狀態，保留手動通過／退回（新流程送出後不會再產生待審核） */
   const reviewSales = (pass) => {
     const status = pass ? "已審核" : "退回修改";
     logApproval("每日營收", sf.id, status, `${date} ${nameOf(curStore)}`);
@@ -3488,72 +3469,13 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     setSf({ ...sf, status });
   };
 
-  /* ── 當日支出／收入／叫貨 清單 ── */
+  /* ── 當日已記錄清單 ── */
   const dayExp = data.expenses.filter((r) => r.date === date && r.storeId === curStore && perm.canSeeRecord(user, r)).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
   const dayInc = (data.incomes || []).filter((r) => r.date === date && r.storeId === curStore && perm.canSeeRecord(user, r));
   const dayOrd = data.orders.filter((r) => r.date === date && r.storeId === curStore);
   const expSum = dayExp.reduce((a, r) => a + num(r.amount), 0);
   const incSum = dayInc.reduce((a, r) => a + num(r.amount), 0);
   const ordSum = dayOrd.reduce((a, r) => a + num(r.amount), 0);
-
-  /* 快速新增列狀態 */
-  const [qe, setQe] = useState({ categoryName: "", item: "", amount: "", payMethod: "現金" });
-  const [qi, setQi] = useState({ categoryName: "", item: "", amount: "", payMethod: "現金" });
-  const [qo, setQo] = useState({ vendorId: "", items: "", amount: "", billing: "現結", dueDate: "" });
-
-  const resolveCat = (list, name, extra) => {
-    const n = name.trim();
-    const hit = list.find((c) => c.name === n);
-    if (hit) return { id: hit.id, newCat: null };
-    const c = { id: uid("cat"), name: n, active: true, ...extra };
-    return { id: c.id, newCat: c };
-  };
-  const addExp = () => {
-    if (!qe.categoryName.trim()) return alert("請選擇或輸入支出類別");
-    if (qe.categoryName.trim() === "廠商原料叫貨") return alert("「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。");
-    if (!qe.item.trim()) return alert("請填寫支出品項");
-    if (num(qe.amount) <= 0) return alert("金額需大於 0");
-    const { id: categoryId, newCat } = resolveCat(data.categories, qe.categoryName, { fixed: false });
-    const { categoryName, ...qrest } = qe;
-    const rec = {
-      /* 每日 Key 帳新增一律直接入帳，不經審核 */
-      ...EXP_EMPTY, ...qrest, categoryId, id: uid("ex"), date, storeId: curStore, amount: num(qe.amount),
-      payer: user.name, status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
-    };
-    update((d) => ({ ...d, categories: newCat ? [...d.categories, newCat] : d.categories, expenses: [...d.expenses, rec] }));
-    setQe({ categoryName: "", item: "", amount: "", payMethod: qe.payMethod });
-  };
-  const addInc = () => {
-    if (!qi.categoryName.trim()) return alert("請選擇或輸入收入類別");
-    if (!qi.item.trim()) return alert("請填寫收入項目");
-    if (num(qi.amount) <= 0) return alert("金額需大於 0");
-    const { id: categoryId, newCat } = resolveCat(data.incomeCategories || [], qi.categoryName, {});
-    const { categoryName, ...qrest } = qi;
-    const rec = {
-      /* 每日 Key 帳新增一律直接入帳，不經審核 */
-      ...INC_EMPTY, ...qrest, categoryId, id: uid("in"), date, storeId: curStore, amount: num(qi.amount),
-      payer: user.name, status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
-    };
-    update((d) => ({
-      ...d,
-      incomeCategories: newCat ? [...(d.incomeCategories || []), newCat] : d.incomeCategories,
-      incomes: [...(d.incomes || []), rec],
-    }));
-    setQi({ categoryName: "", item: "", amount: "", payMethod: qi.payMethod });
-  };
-  const addOrd = () => {
-    if (!qo.vendorId) return alert("請選擇廠商");
-    if (num(qo.amount) <= 0) return alert("金額需大於 0");
-    if (qo.billing === "月結" && !qo.dueDate) return alert("月結叫貨請填寫預計付款日");
-    const rec = {
-      id: uid("po"), date, storeId: curStore, vendorId: qo.vendorId, items: qo.items,
-      amount: num(qo.amount), billing: qo.billing, dueDate: qo.billing === "月結" ? qo.dueDate : "",
-      paidDate: qo.billing === "現結" ? date : "", payStatus: qo.billing === "現結" ? "已付款" : "未付款",
-      invoiceStatus: "未收到", invoiceNo: "", attachment: null, note: "", createdBy: user.id,
-    };
-    update((d) => ({ ...d, orders: [...d.orders, rec] }));
-    setQo({ vendorId: "", items: "", amount: "", billing: qo.billing, dueDate: "" });
-  };
 
   const submitDraft = (kind, rec) => {
     const key = kind === "exp" ? "expenses" : "incomes";
@@ -3568,6 +3490,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     update((d) => ({ ...d, [key]: d[key].filter((r) => r.id !== rec.id) }));
   };
 
+  /* 舊資料若仍留有草稿，保留一鍵送審（新流程送出後不會再產生草稿） */
   const draftCount = dayExp.filter((r) => r.status === "草稿").length + dayInc.filter((r) => r.status === "草稿").length;
   const submitAllDrafts = () => {
     if (!confirm(`將當日 ${draftCount} 筆草稿（支出／收入）全部送出審核？`)) return;
@@ -3576,6 +3499,122 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       expenses: d.expenses.map((r) => r.date === date && r.storeId === curStore && r.status === "草稿" ? { ...r, status: "待審核" } : r),
       incomes: (d.incomes || []).map((r) => r.date === date && r.storeId === curStore && r.status === "草稿" ? { ...r, status: "待審核" } : r),
     }));
+  };
+
+  /* ── 本次新增（尚未送出，先暫存在畫面上，可自由增減列） ── */
+  const blankExp = () => ({ key: uid("d"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金" });
+  const blankInc = () => ({ key: uid("d"), categoryName: "", item: "", amount: "", payMethod: "現金" });
+  const blankOrd = () => ({ key: uid("d"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "" });
+  const [expRows, setExpRows] = useState([blankExp()]);
+  const [incRows, setIncRows] = useState([blankInc()]);
+  const [ordRows, setOrdRows] = useState([blankOrd()]);
+  const setExpRow = (key, k, v) => setExpRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const setIncRow = (key, k, v) => setIncRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const setOrdRow = (key, k, v) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const delExpRow = (key) => setExpRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankExp()]);
+  const delIncRow = (key) => setIncRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankInc()]);
+  const delOrdRow = (key) => setOrdRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankOrd()]);
+
+  const filledExp = expRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
+  const filledInc = incRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
+  const filledOrd = ordRows.filter((r) => r.vendorId || r.items.trim() || num(r.amount) > 0);
+
+  const resolveCat = (list, pending, name) => {
+    const n = name.trim();
+    const hit = list.find((c) => c.name === n) || pending.find((c) => c.name === n);
+    if (hit) return { id: hit.id, newCat: null };
+    const c = { id: uid("cat"), name: n, active: true };
+    return { id: c.id, newCat: c };
+  };
+
+  /* ── 一次送出：日結營收＋本次新增的支出／收入／叫貨，全部直接過審／已審核入帳，不經草稿或待審核 ── */
+  const submitAll = () => {
+    if (!validDate(date)) return alert("請輸入正確日期（YYYY/MM/DD）");
+    for (const r of filledExp) {
+      if (!r.categoryName.trim()) return alert("支出：請選擇或輸入類別");
+      if (r.categoryName.trim() === "廠商原料叫貨") return alert("「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。");
+      if (!r.item.trim()) return alert("支出：請填寫品項");
+      if (!(num(r.amount) > 0)) return alert("支出：金額需大於 0");
+    }
+    for (const r of filledInc) {
+      if (!r.categoryName.trim()) return alert("收入：請選擇或輸入類別");
+      if (!r.item.trim()) return alert("收入：請填寫項目");
+      if (!(num(r.amount) > 0)) return alert("收入：金額需大於 0");
+    }
+    for (const r of filledOrd) {
+      if (!r.vendorId) return alert("叫貨：請選擇廠商");
+      if (!(num(r.amount) > 0)) return alert("叫貨：金額需大於 0");
+      if (r.billing === "月結" && !r.dueDate) return alert("叫貨：月結需填寫預計付款日");
+    }
+
+    const salesFilled = sf && !salesLocked && ["pos", "coop", "card", "twpay", "linepay", "online", "transfer"].some((k) => num(sf[k]) > 0);
+    if (salesFilled) {
+      const c = calcSales(sf);
+      if (c.cash < 0 && !sf.diffReason.trim()) return alert("日結營收：非現金合計超過營業額，請填寫差異原因。");
+    }
+    if (!salesFilled && filledExp.length === 0 && filledInc.length === 0 && filledOrd.length === 0) {
+      return alert("尚未輸入任何資料。");
+    }
+
+    const newExpCats = [];
+    const newIncCats = [];
+    const expRecs = filledExp.map((r) => {
+      const { id: categoryId, newCat } = resolveCat(data.categories, newExpCats, r.categoryName);
+      if (newCat) newExpCats.push(newCat);
+      return {
+        ...EXP_EMPTY, id: uid("ex"), date, storeId: curStore, categoryId, item: r.item.trim(),
+        vendorId: r.vendorId, amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
+        status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
+      };
+    });
+    const incRecs = filledInc.map((r) => {
+      const { id: categoryId, newCat } = resolveCat(data.incomeCategories || [], newIncCats, r.categoryName);
+      if (newCat) newIncCats.push(newCat);
+      return {
+        ...INC_EMPTY, id: uid("in"), date, storeId: curStore, categoryId, item: r.item.trim(),
+        amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
+        status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
+      };
+    });
+    const ordRecs = filledOrd.map((r) => ({
+      id: uid("po"), date, storeId: curStore, vendorId: r.vendorId, items: r.items,
+      amount: num(r.amount), billing: r.billing, dueDate: r.billing === "月結" ? r.dueDate : "",
+      paidDate: r.billing === "現結" ? date : "", payStatus: r.billing === "現結" ? "已付款" : "未付款",
+      invoiceStatus: "未收到", invoiceNo: "", attachment: null, note: "", createdBy: user.id,
+    }));
+
+    let salesRec = null;
+    if (salesFilled) {
+      salesRec = { ...sf, date, storeId: curStore, status: "已審核", reviewedBy: user.id, reviewedAt: nowStamp() };
+      if (!existing) { salesRec.id = uid("ds"); salesRec.createdBy = user.id; salesRec.createdAt = nowStamp(); }
+      else logAudit("每日營收", salesRec.id, existing, salesRec);
+    }
+
+    const newCatNames = [...newExpCats, ...newIncCats].map((c) => c.name);
+    const parts = [
+      salesFilled && "日結營收",
+      expRecs.length && `支出 ${expRecs.length} 筆`,
+      incRecs.length && `收入 ${incRecs.length} 筆`,
+      ordRecs.length && `叫貨 ${ordRecs.length} 筆`,
+    ].filter(Boolean).join("、");
+    const confirmMsg = `確定送出今日資料？（${parts}）` + (newCatNames.length ? `\n將自動新增類別：${newCatNames.join("、")}` : "");
+    if (!confirm(confirmMsg)) return;
+
+    update((d) => ({
+      ...d,
+      categories: newExpCats.length ? [...d.categories, ...newExpCats] : d.categories,
+      incomeCategories: newIncCats.length ? [...(d.incomeCategories || []), ...newIncCats] : d.incomeCategories,
+      expenses: expRecs.length ? [...d.expenses, ...expRecs] : d.expenses,
+      incomes: incRecs.length ? [...(d.incomes || []), ...incRecs] : d.incomes,
+      orders: ordRecs.length ? [...d.orders, ...ordRecs] : d.orders,
+      dailySales: !salesRec ? d.dailySales
+        : existing ? d.dailySales.map((r) => r.id === salesRec.id ? salesRec : r)
+        : [...d.dailySales, salesRec],
+    }));
+
+    setExpRows([blankExp()]);
+    setIncRows([blankInc()]);
+    setOrdRows([blankOrd()]);
   };
 
   if (!sf) return null;
@@ -3588,6 +3627,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{right}</div>
     </div>
   );
+  const totalNewItems = filledExp.length + filledInc.length + filledOrd.length;
 
   return (
     <div>
@@ -3605,6 +3645,10 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       <StoreTabs stores={stores} value={curStore} onChange={setStoreTab} />
 
       {!validDate(date) ? <div className="pl-card" style={{ padding: 24 }}><Empty text="請輸入正確日期（YYYY/MM/DD）" /></div> : <>
+
+      <div className="pl-card" style={{ padding: "10px 16px", marginBottom: 14, fontSize: 12.5, color: T.sub }}>
+        下面把今天的日結營收、支出、收入、叫貨一次填完，最後按一次「送出今日資料」整批入帳，不用分頁操作、不會卡在待審核。
+      </div>
 
       {/* ① 日結營收 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14, borderTop: `3px solid ${T.brown}` }}>
@@ -3634,154 +3678,179 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         </div>
         {c.cash < 0 && (
           <div style={{ marginTop: 10, background: T.redBg, borderRadius: 8, padding: 10 }}>
-            <div style={{ color: T.red, fontSize: 12.5, marginBottom: 6 }}>非現金合計超過每日營業額（超出 {fmt(-c.cash)}），送審前請填寫差異原因。</div>
+            <div style={{ color: T.red, fontSize: 12.5, marginBottom: 6 }}>非現金合計超過每日營業額（超出 {fmt(-c.cash)}），送出前請填寫差異原因。</div>
             <input className="pl-input" value={sf.diffReason} onChange={set("diffReason")} placeholder="差異原因" disabled={salesLocked} />
           </div>
         )}
-        {!salesLocked && (
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-            {["草稿", "退回修改", undefined].includes(sf.status) && <button className="pl-btn" onClick={() => saveSales(false)}>儲存草稿</button>}
-            <button className="pl-btn primary" onClick={() => saveSales(sf.status !== "已審核")}>
-              {sf.status === "已審核" ? "儲存修改" : "送出日結審核"}
-            </button>
-          </div>
-        )}
+        {salesLocked && <div style={{ marginTop: 10, fontSize: 12.5, color: T.sub }}>已審核僅系統管理者可修改。</div>}
       </div>
 
       {/* ② 當日支出 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-        {cardHead(`② 當日支出（${dayExp.length} 筆・${fmt(expSum)}）`, null)}
+        {cardHead(`② 當日支出（已記錄 ${dayExp.length} 筆・${fmt(expSum)}）`, null)}
+        {dayExp.length > 0 && (
+          <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
+            <table className="pl-table">
+              <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th>付款人</th><th>狀態</th><th></th></tr></thead>
+              <tbody>
+                {dayExp.map((r) => (
+                  <tr key={r.id}>
+                    <td>{catOf(r.categoryId)}</td><td>{r.item}</td>
+                    <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+                    <td>{r.payMethod}</td><td>{r.payer}</td>
+                    <td><Badge text={r.status} /></td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {r.status === "草稿" && <button className="pl-btn small" onClick={() => submitDraft("exp", r)}>送審</button>}
+                      {" "}<button className="pl-btn small danger" disabled={r.status === "過審" && !perm.isAdmin(user)} title={r.status === "過審" && !perm.isAdmin(user) ? "過審的支出無法刪除" : ""} onClick={() => delRec("exp", r)}>刪除</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>本次新增（尚未送出）</div>
+        <datalist id="dl-daily-expcat">{data.categories.filter((x) => x.active && x.id !== ORDER_CAT_ID).map((x) => <option key={x.id} value={x.name} />)}</datalist>
         <div className="pl-scroll-x">
           <table className="pl-table">
-            <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th>付款人</th><th>狀態</th><th></th></tr></thead>
+            <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th></th></tr></thead>
             <tbody>
-              {dayExp.map((r) => (
-                <tr key={r.id}>
-                  <td>{catOf(r.categoryId)}</td><td>{r.item}</td>
-                  <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
-                  <td>{r.payMethod}</td><td>{r.payer}</td>
-                  <td><Badge text={r.status} /></td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    {r.status === "草稿" && <button className="pl-btn small" onClick={() => submitDraft("exp", r)}>送審</button>}
-                    {" "}<button className="pl-btn small danger" disabled={r.status === "過審" && !perm.isAdmin(user)} title={r.status === "過審" && !perm.isAdmin(user) ? "過審的支出無法刪除" : ""} onClick={() => delRec("exp", r)}>刪除</button>
+              {expRows.map((r) => (
+                <tr key={r.key}>
+                  <td style={{ minWidth: 130 }}>
+                    <input className="pl-input" list="dl-daily-expcat" value={r.categoryName}
+                      onChange={(e) => setExpRow(r.key, "categoryName", e.target.value)} placeholder="類別（可輸入）" />
                   </td>
+                  <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="支出品項" value={r.item} onChange={(e) => setExpRow(r.key, "item", e.target.value)} /></td>
+                  <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={r.amount} onChange={(e) => setExpRow(r.key, "amount", e.target.value)} /></td>
+                  <td style={{ minWidth: 110 }}>
+                    <select className="pl-input" value={r.payMethod} onChange={(e) => setExpRow(r.key, "payMethod", e.target.value)}>
+                      {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
+                    </select>
+                  </td>
+                  <td><button className="pl-btn small danger" onClick={() => delExpRow(r.key)}>✕</button></td>
                 </tr>
               ))}
-              <tr style={{ background: "#FCFAF6" }}>
-                <td style={{ minWidth: 130 }}>
-                  <input className="pl-input" list="dl-daily-expcat" value={qe.categoryName}
-                    onChange={(e) => setQe({ ...qe, categoryName: e.target.value })} placeholder="類別（可輸入）" />
-                  <datalist id="dl-daily-expcat">{data.categories.filter((x) => x.active && x.id !== ORDER_CAT_ID).map((x) => <option key={x.id} value={x.name} />)}</datalist>
-                </td>
-                <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="支出品項" value={qe.item} onChange={(e) => setQe({ ...qe, item: e.target.value })} /></td>
-                <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={qe.amount} onChange={(e) => setQe({ ...qe, amount: e.target.value })} /></td>
-                <td style={{ minWidth: 110 }}>
-                  <select className="pl-input" value={qe.payMethod} onChange={(e) => setQe({ ...qe, payMethod: e.target.value })}>
-                    {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
-                  </select>
-                </td>
-                <td colSpan={2} style={{ color: T.sub, fontSize: 12.5 }}>{user.name}・草稿</td>
-                <td><button className="pl-btn primary small" onClick={addExp}>＋ 新增</button></td>
-              </tr>
             </tbody>
           </table>
         </div>
+        <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setExpRows([...expRows, blankExp()])}>＋ 新增一列</button>
       </div>
 
       {/* ③ 當日收入 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-        {cardHead(`③ 當日收入（${dayInc.length} 筆・${fmt(incSum)}）`, null)}
+        {cardHead(`③ 當日收入（已記錄 ${dayInc.length} 筆・${fmt(incSum)}）`, null)}
+        {dayInc.length > 0 && (
+          <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
+            <table className="pl-table">
+              <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th>經手人</th><th>狀態</th><th></th></tr></thead>
+              <tbody>
+                {dayInc.map((r) => (
+                  <tr key={r.id}>
+                    <td>{incCatOf(r.categoryId)}</td><td>{r.item}</td>
+                    <td className="num" style={{ fontWeight: 600, color: T.green }}>{fmtN(r.amount)}</td>
+                    <td>{r.payMethod}</td><td>{r.payer}</td>
+                    <td><Badge text={r.status} /></td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {r.status === "草稿" && <button className="pl-btn small" onClick={() => submitDraft("inc", r)}>送審</button>}
+                      {" "}<button className="pl-btn small danger" disabled={r.status === "過審" && !perm.isAdmin(user)} title={r.status === "過審" && !perm.isAdmin(user) ? "過審的收入無法刪除" : ""} onClick={() => delRec("inc", r)}>刪除</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>本次新增（尚未送出）</div>
+        <datalist id="dl-daily-inccat">{(data.incomeCategories || []).filter((x) => x.active).map((x) => <option key={x.id} value={x.name} />)}</datalist>
         <div className="pl-scroll-x">
           <table className="pl-table">
-            <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th>經手人</th><th>狀態</th><th></th></tr></thead>
+            <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th></th></tr></thead>
             <tbody>
-              {dayInc.map((r) => (
-                <tr key={r.id}>
-                  <td>{incCatOf(r.categoryId)}</td><td>{r.item}</td>
-                  <td className="num" style={{ fontWeight: 600, color: T.green }}>{fmtN(r.amount)}</td>
-                  <td>{r.payMethod}</td><td>{r.payer}</td>
-                  <td><Badge text={r.status} /></td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    {r.status === "草稿" && <button className="pl-btn small" onClick={() => submitDraft("inc", r)}>送審</button>}
-                    {" "}<button className="pl-btn small danger" disabled={r.status === "過審" && !perm.isAdmin(user)} title={r.status === "過審" && !perm.isAdmin(user) ? "過審的收入無法刪除" : ""} onClick={() => delRec("inc", r)}>刪除</button>
+              {incRows.map((r) => (
+                <tr key={r.key}>
+                  <td style={{ minWidth: 130 }}>
+                    <input className="pl-input" list="dl-daily-inccat" value={r.categoryName}
+                      onChange={(e) => setIncRow(r.key, "categoryName", e.target.value)} placeholder="類別（可輸入）" />
                   </td>
+                  <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="收入項目" value={r.item} onChange={(e) => setIncRow(r.key, "item", e.target.value)} /></td>
+                  <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={r.amount} onChange={(e) => setIncRow(r.key, "amount", e.target.value)} /></td>
+                  <td style={{ minWidth: 110 }}>
+                    <select className="pl-input" value={r.payMethod} onChange={(e) => setIncRow(r.key, "payMethod", e.target.value)}>
+                      {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
+                    </select>
+                  </td>
+                  <td><button className="pl-btn small danger" onClick={() => delIncRow(r.key)}>✕</button></td>
                 </tr>
               ))}
-              <tr style={{ background: "#FCFAF6" }}>
-                <td style={{ minWidth: 130 }}>
-                  <input className="pl-input" list="dl-daily-inccat" value={qi.categoryName}
-                    onChange={(e) => setQi({ ...qi, categoryName: e.target.value })} placeholder="類別（可輸入）" />
-                  <datalist id="dl-daily-inccat">{(data.incomeCategories || []).filter((x) => x.active).map((x) => <option key={x.id} value={x.name} />)}</datalist>
-                </td>
-                <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="收入項目" value={qi.item} onChange={(e) => setQi({ ...qi, item: e.target.value })} /></td>
-                <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={qi.amount} onChange={(e) => setQi({ ...qi, amount: e.target.value })} /></td>
-                <td style={{ minWidth: 110 }}>
-                  <select className="pl-input" value={qi.payMethod} onChange={(e) => setQi({ ...qi, payMethod: e.target.value })}>
-                    {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
-                  </select>
-                </td>
-                <td colSpan={2} style={{ color: T.sub, fontSize: 12.5 }}>{user.name}・草稿</td>
-                <td><button className="pl-btn primary small" style={{ background: T.green, borderColor: T.green }} onClick={addInc}>＋ 新增</button></td>
-              </tr>
             </tbody>
           </table>
         </div>
+        <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setIncRows([...incRows, blankInc()])}>＋ 新增一列</button>
       </div>
 
       {/* ④ 當日叫貨 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-        {cardHead(`④ 當日叫貨（${dayOrd.length} 筆・${fmt(ordSum)}）`, null)}
+        {cardHead(`④ 當日叫貨（已記錄 ${dayOrd.length} 筆・${fmt(ordSum)}）`, null)}
+        {dayOrd.length > 0 && (
+          <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
+            <table className="pl-table">
+              <thead><tr><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>結帳</th><th>預計付款日</th><th>付款狀態</th><th></th></tr></thead>
+              <tbody>
+                {dayOrd.map((r) => (
+                  <tr key={r.id}>
+                    <td>{venOf(r.vendorId)}</td><td>{r.items}</td>
+                    <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+                    <td>{r.billing}</td><td>{r.dueDate || "—"}</td>
+                    <td><Badge text={r.payStatus} tone={r.payStatus === "已付款" ? "green" : "yellow"} /></td>
+                    <td><button className="pl-btn small danger" onClick={() => delRec("ord", r)}>刪除</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>本次新增（尚未送出）</div>
         <div className="pl-scroll-x">
           <table className="pl-table">
-            <thead><tr><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>結帳</th><th>預計付款日</th><th>付款狀態</th><th></th></tr></thead>
+            <thead><tr><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>結帳</th><th>預計付款日</th><th></th></tr></thead>
             <tbody>
-              {dayOrd.map((r) => (
-                <tr key={r.id}>
-                  <td>{venOf(r.vendorId)}</td><td>{r.items}</td>
-                  <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
-                  <td>{r.billing}</td><td>{r.dueDate || "—"}</td>
-                  <td><Badge text={r.payStatus} tone={r.payStatus === "已付款" ? "green" : "yellow"} /></td>
-                  <td><button className="pl-btn small danger" onClick={() => delRec("ord", r)}>刪除</button></td>
+              {ordRows.map((r) => (
+                <tr key={r.key}>
+                  <td style={{ minWidth: 120 }}>
+                    <select className="pl-input" value={r.vendorId} onChange={(e) => setOrdRow(r.key, "vendorId", e.target.value)}>
+                      <option value="">廠商</option>{data.vendors.filter((v) => v.active !== false).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="品項說明" value={r.items} onChange={(e) => setOrdRow(r.key, "items", e.target.value)} /></td>
+                  <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={r.amount} onChange={(e) => setOrdRow(r.key, "amount", e.target.value)} /></td>
+                  <td style={{ minWidth: 90 }}>
+                    <select className="pl-input" value={r.billing} onChange={(e) => setOrdRow(r.key, "billing", e.target.value)}>
+                      {ORDER_BILLING.map((b) => <option key={b}>{b}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ minWidth: 110 }}>
+                    {r.billing === "月結"
+                      ? <input className="pl-input" placeholder="YYYY/MM/DD" value={r.dueDate} onChange={(e) => setOrdRow(r.key, "dueDate", e.target.value)} />
+                      : <span style={{ color: T.sub, fontSize: 12.5 }}>現結・當日付清</span>}
+                  </td>
+                  <td><button className="pl-btn small danger" onClick={() => delOrdRow(r.key)}>✕</button></td>
                 </tr>
               ))}
-              <tr style={{ background: "#FCFAF6" }}>
-                <td style={{ minWidth: 120 }}>
-                  <select className="pl-input" value={qo.vendorId} onChange={(e) => setQo({ ...qo, vendorId: e.target.value })}>
-                    <option value="">廠商</option>{data.vendors.filter((v) => v.active !== false).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                  </select>
-                </td>
-                <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="品項說明" value={qo.items} onChange={(e) => setQo({ ...qo, items: e.target.value })} /></td>
-                <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={qo.amount} onChange={(e) => setQo({ ...qo, amount: e.target.value })} /></td>
-                <td style={{ minWidth: 90 }}>
-                  <select className="pl-input" value={qo.billing} onChange={(e) => setQo({ ...qo, billing: e.target.value })}>
-                    {ORDER_BILLING.map((b) => <option key={b}>{b}</option>)}
-                  </select>
-                </td>
-                <td style={{ minWidth: 110 }}>
-                  {qo.billing === "月結"
-                    ? <input className="pl-input" placeholder="YYYY/MM/DD" value={qo.dueDate} onChange={(e) => setQo({ ...qo, dueDate: e.target.value })} />
-                    : <span style={{ color: T.sub, fontSize: 12.5 }}>現結・當日付清</span>}
-                </td>
-                <td></td>
-                <td><button className="pl-btn primary small" onClick={addOrd}>＋ 新增</button></td>
-              </tr>
             </tbody>
           </table>
         </div>
+        <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setOrdRows([...ordRows, blankOrd()])}>＋ 新增一列</button>
       </div>
 
-      {/* 當日彙總列 */}
-      <div className="pl-card" style={{ padding: "12px 16px", display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center" }}>
-        <span style={{ fontSize: 13, color: T.sub }}>{date}・{nameOf(curStore)} 彙總</span>
-        <span style={{ fontSize: 13 }}>營業額 <b>{fmt(c.net)}</b></span>
-        <span style={{ fontSize: 13 }}>收入 <b style={{ color: T.green }}>{fmt(incSum)}</b></span>
-        <span style={{ fontSize: 13 }}>支出 <b style={{ color: T.red }}>{fmt(expSum)}</b></span>
-        <span style={{ fontSize: 13 }}>叫貨 <b>{fmt(ordSum)}</b></span>
+      {/* 送出 */}
+      <div className="pl-card" style={{ padding: "12px 16px", display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center", position: "sticky", bottom: 12, zIndex: 20, boxShadow: "0 4px 16px #2B252122" }}>
+        <span style={{ fontSize: 13, color: T.sub }}>{date}・{nameOf(curStore)}</span>
+        <span style={{ fontSize: 13 }}>本次新增 <b>{totalNewItems}</b> 筆{salesLocked ? "" : sf && ["pos","coop","card","twpay","linepay","online","transfer"].some(k=>num(sf[k])>0) ? "＋日結營收" : ""}</span>
         {draftCount > 0 && (
-          <button className="pl-btn primary" style={{ marginLeft: "auto" }} onClick={submitAllDrafts}>
-            當日草稿一鍵送審（{draftCount}）
-          </button>
+          <button className="pl-btn" onClick={submitAllDrafts}>舊草稿一鍵送審（{draftCount}）</button>
         )}
+        <button className="pl-btn primary" style={{ marginLeft: "auto" }} onClick={submitAll}>送出今日資料</button>
       </div>
       </>}
     </div>
