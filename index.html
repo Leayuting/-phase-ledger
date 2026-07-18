@@ -83,9 +83,9 @@ const ORDER_PAY_STATUS = ["未付款", "部分付款", "已付款"];
 const INVOICE_STATUS = ["未收到", "已收到", "不需發票"];
 const AR_STATUS = ["未請款", "已請款待收款", "部分收款", "已收款", "呆帳"];
 const SALES_STATUS = ["草稿", "待審核", "已審核", "退回修改"];
-const EXP_STATUS = ["草稿", "待審核", "已入帳", "已退回"];
+const EXP_STATUS = ["草稿", "待審核", "過審", "已退回"];
 /* 收支入帳規則：現金付款／收款免審核，直接入帳；其餘一律先進待審核 */
-const autoStatus = (payMethod) => (payMethod === "現金" ? "已入帳" : "待審核");
+const autoStatus = (payMethod) => (payMethod === "現金" ? "過審" : "待審核");
 
 /* ── 工具 ── */
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -212,7 +212,7 @@ function buildSeedData() {
       isAdvance: !!opts.isAdvance, isReimbursed: !!opts.isReimbursed, reimburseDate: opts.reimburseDate || "",
       invoiceNo: opts.invoiceNo || "", attachment: null, note: opts.note || "",
       createdBy: "u1", createdAt: date + " 12:00",
-      status: opts.status || "已入帳", reviewedBy: opts.status === "待審核" ? null : "u2",
+      status: opts.status || "過審", reviewedBy: opts.status === "待審核" ? null : "u2",
       reviewedAt: opts.status === "待審核" ? null : date + " 18:00",
     });
   };
@@ -241,7 +241,7 @@ function buildSeedData() {
       date, storeId, categoryId, item, amount, payMethod,
       payer: opts.payer || "Lea", invoiceNo: opts.invoiceNo || "", attachment: null, note: opts.note || "",
       createdBy: "u1", createdAt: date + " 12:00",
-      status: opts.status || "已入帳", reviewedBy: opts.status === "待審核" ? null : "u2",
+      status: opts.status || "過審", reviewedBy: opts.status === "待審核" ? null : "u2",
       reviewedAt: opts.status === "待審核" ? null : date + " 18:00",
     });
   };
@@ -366,7 +366,7 @@ const css = `
 
 const STATUS_TONE = {
   "草稿": "gray", "待審核": "yellow", "已審核": "green", "退回修改": "red",
-  "已入帳": "green", "已退回": "red",
+  "過審": "green", "已退回": "red",
   "未付款": "yellow", "部分付款": "yellow", "已付款": "green",
   "未收到": "yellow", "已收到": "green", "不需發票": "gray",
   "未請款": "gray", "已請款待收款": "yellow", "部分收款": "yellow", "已收款": "green", "呆帳": "red",
@@ -538,7 +538,7 @@ const perm = {
     const inScope = (perm.storeScope(u) || []).includes(rec.storeId);
     if (u.role === "店長") return inScope;
     if (u.role === "門店人員")
-      return inScope && !["已審核", "已入帳"].includes(rec.status);
+      return inScope && !["已審核", "過審"].includes(rec.status);
     return false;
   },
   canApprove: (u, rec) => {
@@ -547,7 +547,7 @@ const perm = {
     return false;
   },
   canEdit: (u, rec) => {
-    const locked = ["已審核", "已入帳"].includes(rec.status);
+    const locked = ["已審核", "過審"].includes(rec.status);
     if (locked) return perm.isAdmin(u); // 已審核僅管理者可修改（留紀錄）
     if (perm.isAcct(u)) return true;
     if (u.role === "店長") return rec.storeId === u.storeId;
@@ -1373,16 +1373,16 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
     if (!form.item.trim()) return alert("請填寫支出品項");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
     const old = form.id ? data.expenses.find((r) => r.id === form.id) : null;
-    /* 已入帳的紀錄由管理者修改時維持已入帳；其餘一律依付款方式自動判斷（現金免審核直接入帳，否則待審核） */
-    const status = old && old.status === "已入帳" ? old.status : autoStatus(form.payMethod);
+    /* 過審的紀錄由管理者修改時維持過審；其餘一律依付款方式自動判斷（現金免審核直接入帳，否則待審核） */
+    const status = old && old.status === "過審" ? old.status : autoStatus(form.payMethod);
     const rec = { ...form, amount: num(form.amount), status };
     if (!rec.id) {
       rec.id = uid("ex");
       rec.createdBy = user.id; rec.createdAt = nowStamp(); rec.reviewedBy = null; rec.reviewedAt = null;
       update((d) => ({ ...d, expenses: [...d.expenses, rec] }));
     } else {
-      if (old.status === "已入帳") {
-        if (!perm.isAdmin(user)) return alert("已入帳的支出僅系統管理者可修改。");
+      if (old.status === "過審") {
+        if (!perm.isAdmin(user)) return alert("過審的支出僅系統管理者可修改。");
         logAudit("每日支出", rec.id, old, rec);
       }
       update((d) => ({ ...d, expenses: d.expenses.map((r) => (r.id === rec.id ? rec : r)) }));
@@ -1391,13 +1391,13 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   };
 
   const review = (rec, pass) => {
-    const status = pass ? "已入帳" : "已退回";
+    const status = pass ? "過審" : "已退回";
     logApproval("每日支出", rec.id, status, `${rec.date}｜${rec.item}`);
     update((d) => ({ ...d, expenses: d.expenses.map((r) => r.id === rec.id ? { ...r, status, reviewedBy: user.id, reviewedAt: nowStamp() } : r) }));
   };
 
   const remove = (rec) => {
-    if (rec.status === "已入帳" && !perm.isAdmin(user)) return alert("已入帳的支出無法刪除。");
+    if (rec.status === "過審" && !perm.isAdmin(user)) return alert("過審的支出無法刪除。");
     if (!confirm(`確定刪除支出「${rec.item}」（${rec.date}）？`)) return;
     logAudit("每日支出", rec.id, rec, { ...rec, deleted: true });
     update((d) => ({ ...d, expenses: d.expenses.filter((r) => r.id !== rec.id) }));
@@ -1407,10 +1407,10 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
   const batchRemove = () => {
-    const locked = selRows.filter((r) => r.status === "已入帳" && !perm.isAdmin(user));
+    const locked = selRows.filter((r) => r.status === "過審" && !perm.isAdmin(user));
     const targets = selRows.filter((r) => !locked.includes(r));
-    if (targets.length === 0) return alert("選取的項目都是已入帳資料，無法刪除。");
-    if (!confirm(`確定刪除選取的 ${targets.length} 筆支出？${locked.length ? `（另有 ${locked.length} 筆已入帳，不會刪除）` : ""}`)) return;
+    if (targets.length === 0) return alert("選取的項目都是過審資料，無法刪除。");
+    if (!confirm(`確定刪除選取的 ${targets.length} 筆支出？${locked.length ? `（另有 ${locked.length} 筆過審，不會刪除）` : ""}`)) return;
     targets.forEach((r) => logAudit("每日支出", r.id, r, { ...r, deleted: true }));
     const ids = new Set(targets.map((r) => r.id));
     update((d) => ({ ...d, expenses: d.expenses.filter((r) => !ids.has(r.id)) }));
@@ -1428,13 +1428,14 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
 
   const genFixed = () => {
     if (fixedTodo.length === 0) return;
-    if (!confirm(`將帶入 ${nameOf(curStore)} ${monthLabel(flt.month)}共 ${fixedTodo.length} 筆固定支出（草稿），金額可再逐筆修改。確定？`)) return;
+    if (!confirm(`將帶入 ${nameOf(curStore)} ${monthLabel(flt.month)}共 ${fixedTodo.length} 筆固定支出（直接入帳），金額可再逐筆修改。確定？`)) return;
     const date = flt.month + "/01";
     const recs = fixedTodo.map((f) => ({
+      /* 固定支出項目本來就是預先核准的常態支出，帶入時跳過草稿／待審核，直接入帳 */
       ...EXP_EMPTY, id: uid("ex"),
       date, storeId: curStore, categoryId: f.categoryId, item: f.item,
       amount: num(f.amount), payMethod: f.payMethod || "銀行轉帳",
-      payer: user.name, status: "草稿", fixedItemId: f.id,
+      payer: user.name, status: "過審", fixedItemId: f.id,
       note: "固定支出帶入", createdBy: user.id, createdAt: nowStamp(),
       reviewedBy: null, reviewedAt: null,
     }));
@@ -1582,16 +1583,16 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
     if (!form.item.trim()) return alert("請填寫收入項目");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
     const old = form.id ? data.incomes.find((r) => r.id === form.id) : null;
-    /* 已入帳的紀錄由管理者修改時維持已入帳；其餘一律依收款方式自動判斷（現金免審核直接入帳，否則待審核） */
-    const status = old && old.status === "已入帳" ? old.status : autoStatus(form.payMethod);
+    /* 過審的紀錄由管理者修改時維持過審；其餘一律依收款方式自動判斷（現金免審核直接入帳，否則待審核） */
+    const status = old && old.status === "過審" ? old.status : autoStatus(form.payMethod);
     const rec = { ...form, amount: num(form.amount), status };
     if (!rec.id) {
       rec.id = uid("in"); rec.storeId = curStore;
       rec.createdBy = user.id; rec.createdAt = nowStamp(); rec.reviewedBy = null; rec.reviewedAt = null;
       update((d) => ({ ...d, incomes: [...(d.incomes || []), rec] }));
     } else {
-      if (old.status === "已入帳") {
-        if (!perm.isAdmin(user)) return alert("已入帳的收入僅系統管理者可修改。");
+      if (old.status === "過審") {
+        if (!perm.isAdmin(user)) return alert("過審的收入僅系統管理者可修改。");
         logAudit("門店收入", rec.id, old, rec);
       }
       update((d) => ({ ...d, incomes: d.incomes.map((r) => (r.id === rec.id ? rec : r)) }));
@@ -1600,13 +1601,13 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
   };
 
   const review = (rec, pass) => {
-    const status = pass ? "已入帳" : "已退回";
+    const status = pass ? "過審" : "已退回";
     logApproval("門店收入", rec.id, status, `${rec.date}｜${rec.item}`);
     update((d) => ({ ...d, incomes: d.incomes.map((r) => r.id === rec.id ? { ...r, status, reviewedBy: user.id, reviewedAt: nowStamp() } : r) }));
   };
 
   const remove = (rec) => {
-    if (rec.status === "已入帳" && !perm.isAdmin(user)) return alert("已入帳的收入無法刪除。");
+    if (rec.status === "過審" && !perm.isAdmin(user)) return alert("過審的收入無法刪除。");
     if (!confirm(`確定刪除收入「${rec.item}」（${rec.date}）？`)) return;
     logAudit("門店收入", rec.id, rec, { ...rec, deleted: true });
     update((d) => ({ ...d, incomes: d.incomes.filter((r) => r.id !== rec.id) }));
@@ -1616,10 +1617,10 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
   const batchRemove = () => {
-    const locked = selRows.filter((r) => r.status === "已入帳" && !perm.isAdmin(user));
+    const locked = selRows.filter((r) => r.status === "過審" && !perm.isAdmin(user));
     const targets = selRows.filter((r) => !locked.includes(r));
-    if (targets.length === 0) return alert("選取的項目都是已入帳資料，無法刪除。");
-    if (!confirm(`確定刪除選取的 ${targets.length} 筆收入？${locked.length ? `（另有 ${locked.length} 筆已入帳，不會刪除）` : ""}`)) return;
+    if (targets.length === 0) return alert("選取的項目都是過審資料，無法刪除。");
+    if (!confirm(`確定刪除選取的 ${targets.length} 筆收入？${locked.length ? `（另有 ${locked.length} 筆過審，不會刪除）` : ""}`)) return;
     targets.forEach((r) => logAudit("門店收入", r.id, r, { ...r, deleted: true }));
     const ids = new Set(targets.map((r) => r.id));
     update((d) => ({ ...d, incomes: d.incomes.filter((r) => !ids.has(r.id)) }));
@@ -1708,10 +1709,10 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
             <Field label="備註" span={3}><input className="pl-input" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></Field>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-            {editing.status !== "已入帳" && <span style={{ fontSize: 12, color: T.sub, marginRight: "auto" }}>收款方式選「現金」會直接入帳，否則送出後待審核</span>}
+            {editing.status !== "過審" && <span style={{ fontSize: 12, color: T.sub, marginRight: "auto" }}>收款方式選「現金」會直接入帳，否則送出後待審核</span>}
             <button className="pl-btn" onClick={() => setEditing(null)}>取消</button>
             <button className="pl-btn primary" style={{ background: T.green, borderColor: T.green }} onClick={() => save(editing)}>
-              {editing.status === "已入帳" ? "儲存修改" : "儲存"}
+              {editing.status === "過審" ? "儲存修改" : "儲存"}
             </button>
           </div>
         </Modal>
@@ -1721,7 +1722,7 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
 }
 
 function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
-  const locked = form.status === "已入帳" && !perm.isAdmin(user);
+  const locked = form.status === "過審" && !perm.isAdmin(user);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   /* 類別選單：一般可選項排除系統保留類別（廠商原料叫貨）；
      若這筆紀錄目前的類別已停用（或不在可選清單中），仍把該類別加回選項，避免編輯舊紀錄時選不到原值 */
@@ -1732,9 +1733,9 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
   }
   return (
     <Modal title={form.id ? "支出明細" : "新增支出"} onClose={onClose} width={760}>
-      {form.status === "已入帳" && perm.isAdmin(user) && (
+      {form.status === "過審" && perm.isAdmin(user) && (
         <div style={{ background: T.yellowBg, color: T.yellow, borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontSize: 13 }}>
-          此筆已入帳。修改將完整寫入修改紀錄。
+          此筆已過審。修改將完整寫入修改紀錄。
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
@@ -1783,10 +1784,10 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
       </div>
       {!locked && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-          {form.status !== "已入帳" && <span style={{ fontSize: 12, color: T.sub, marginRight: "auto" }}>付款方式選「現金」會直接入帳，否則送出後待審核</span>}
+          {form.status !== "過審" && <span style={{ fontSize: 12, color: T.sub, marginRight: "auto" }}>付款方式選「現金」會直接入帳，否則送出後待審核</span>}
           <button className="pl-btn" onClick={onClose}>取消</button>
           <button className="pl-btn primary" onClick={() => onSave(form)}>
-            {form.status === "已入帳" ? "儲存修改" : "儲存"}
+            {form.status === "過審" ? "儲存修改" : "儲存"}
           </button>
         </div>
       )}
@@ -3517,7 +3518,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     const rec = {
       /* 每日 Key 帳新增一律直接入帳，不經審核 */
       ...EXP_EMPTY, ...qrest, categoryId, id: uid("ex"), date, storeId: curStore, amount: num(qe.amount),
-      payer: user.name, status: "已入帳", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
+      payer: user.name, status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
     };
     update((d) => ({ ...d, categories: newCat ? [...d.categories, newCat] : d.categories, expenses: [...d.expenses, rec] }));
     setQe({ categoryName: "", item: "", amount: "", payMethod: qe.payMethod });
@@ -3531,7 +3532,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     const rec = {
       /* 每日 Key 帳新增一律直接入帳，不經審核 */
       ...INC_EMPTY, ...qrest, categoryId, id: uid("in"), date, storeId: curStore, amount: num(qi.amount),
-      payer: user.name, status: "已入帳", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
+      payer: user.name, status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
     };
     update((d) => ({
       ...d,
@@ -3560,7 +3561,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   };
   const delRec = (kind, rec) => {
     const label = kind === "exp" ? "支出" : kind === "inc" ? "收入" : "叫貨";
-    if (kind !== "ord" && rec.status === "已入帳" && !perm.isAdmin(user)) return alert(`已入帳的${label}無法刪除。`);
+    if (kind !== "ord" && rec.status === "過審" && !perm.isAdmin(user)) return alert(`過審的${label}無法刪除。`);
     if (!confirm(`確定刪除${label}「${rec.item || rec.items || ""}」？`)) return;
     const key = kind === "exp" ? "expenses" : kind === "inc" ? "incomes" : "orders";
     logAudit(kind === "exp" ? "每日支出" : kind === "inc" ? "門店收入" : "廠商叫貨", rec.id, rec, { ...rec, deleted: true });
@@ -3662,7 +3663,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                   <td><Badge text={r.status} /></td>
                   <td style={{ whiteSpace: "nowrap" }}>
                     {r.status === "草稿" && <button className="pl-btn small" onClick={() => submitDraft("exp", r)}>送審</button>}
-                    {" "}<button className="pl-btn small danger" disabled={r.status === "已入帳" && !perm.isAdmin(user)} title={r.status === "已入帳" && !perm.isAdmin(user) ? "已入帳的支出無法刪除" : ""} onClick={() => delRec("exp", r)}>刪除</button>
+                    {" "}<button className="pl-btn small danger" disabled={r.status === "過審" && !perm.isAdmin(user)} title={r.status === "過審" && !perm.isAdmin(user) ? "過審的支出無法刪除" : ""} onClick={() => delRec("exp", r)}>刪除</button>
                   </td>
                 </tr>
               ))}
@@ -3702,7 +3703,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                   <td><Badge text={r.status} /></td>
                   <td style={{ whiteSpace: "nowrap" }}>
                     {r.status === "草稿" && <button className="pl-btn small" onClick={() => submitDraft("inc", r)}>送審</button>}
-                    {" "}<button className="pl-btn small danger" disabled={r.status === "已入帳" && !perm.isAdmin(user)} title={r.status === "已入帳" && !perm.isAdmin(user) ? "已入帳的收入無法刪除" : ""} onClick={() => delRec("inc", r)}>刪除</button>
+                    {" "}<button className="pl-btn small danger" disabled={r.status === "過審" && !perm.isAdmin(user)} title={r.status === "過審" && !perm.isAdmin(user) ? "過審的收入無法刪除" : ""} onClick={() => delRec("inc", r)}>刪除</button>
                   </td>
                 </tr>
               ))}
