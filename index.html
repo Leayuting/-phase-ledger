@@ -96,6 +96,20 @@ const nowStamp = () => {
   const d = new Date();
   return `${dstr(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
+/* 記住使用者上次選的日期／月份／門店頁籤，重新整理或重新載入頁面後不會跳回今天／當月 */
+function usePersisted(key, initial) {
+  const [state, setState] = useState(() => {
+    try {
+      const v = localStorage.getItem(key);
+      return v !== null ? JSON.parse(v) : initial;
+    } catch (e) { return initial; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch (e) { /* 忽略儲存失敗 */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
+  return [state, setState];
+}
 const fmt = (n) => (n === null || n === undefined || isNaN(n) ? "—" : "NT$ " + Math.round(n).toLocaleString("zh-TW"));
 const fmtN = (n) => (n === null || n === undefined || isNaN(n) ? "—" : Math.round(n).toLocaleString("zh-TW"));
 const num = (v) => { const x = parseFloat(String(v).replace(/,/g, "")); return isNaN(x) ? 0 : x; };
@@ -892,12 +906,12 @@ const SALES_EMPTY = {
 };
 
 function SalesModule({ data, update, user, users, logAudit, logApproval }) {
-  const [month, setMonth] = useState(monthOf(todayStr()));
+  const [month, setMonth] = usePersisted("pl_sales_month", monthOf(todayStr()));
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(new Set());
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && s.retail && (!scope || scope.includes(s.id)));
-  const [storeTab, setStoreTab] = useState("");
+  const [storeTab, setStoreTab] = usePersisted("pl_sales_storeTab", "");
   const curStore = stores.some((s) => s.id === storeTab) ? storeTab : (stores[0]?.id || "");
   const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
   const userName = (id) => users.find((u) => u.id === id)?.name || "—";
@@ -1340,10 +1354,18 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   const [batchOpen, setBatchOpen] = useState(false);
   const [kind, setKind] = useState("expense");
   const [selected, setSelected] = useState(new Set());
-  const [flt, setFlt] = useState({ month: monthOf(todayStr()), date: "", storeId: "", categoryId: "", vendorId: "", payer: "", status: "", min: "", max: "" });
+  const [flt, setFlt] = useState(() => {
+    let month = monthOf(todayStr());
+    try { const v = localStorage.getItem("pl_expenses_month"); if (v) month = JSON.parse(v); } catch (e) { /* 忽略 */ }
+    return { month, date: "", storeId: "", categoryId: "", vendorId: "", payer: "", status: "", min: "", max: "" };
+  });
+  /* 只記住月份篩選，不記住其他篩選條件（類別/廠商/付款人等），避免重新整理後被舊篩選卡住 */
+  useEffect(() => {
+    try { localStorage.setItem("pl_expenses_month", JSON.stringify(flt.month)); } catch (e) { /* 忽略 */ }
+  }, [flt.month]);
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
-  const [storeTab, setStoreTab] = useState("");
+  const [storeTab, setStoreTab] = usePersisted("pl_expenses_storeTab", "");
   const curStore = stores.some((s) => s.id === storeTab) ? storeTab : (stores[0]?.id || "");
   const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
   const catOf = (id) => data.categories.find((c) => c.id === id)?.name || "—";
@@ -1566,7 +1588,7 @@ const INC_EMPTY = {
 
 function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logApproval }) {
   const [editing, setEditing] = useState(null);
-  const [month, setMonth] = useState(monthOf(todayStr()));
+  const [month, setMonth] = usePersisted("pl_income_month", monthOf(todayStr()));
   const [selected, setSelected] = useState(new Set());
   const cats = data.incomeCategories.filter((c) => c.active);
   const catOf = (id) => data.incomeCategories.find((c) => c.id === id)?.name || "—";
@@ -1805,8 +1827,8 @@ const ORD_EMPTY = {
 };
 
 function OrderModule({ data, update, user, users, logAudit }) {
-  const [month, setMonth] = useState(monthOf(todayStr()));
-  const [dateFlt, setDateFlt] = useState("");
+  const [month, setMonth] = usePersisted("pl_orders_month", monthOf(todayStr()));
+  const [dateFlt, setDateFlt] = usePersisted("pl_orders_dateFlt", "");
   const [editing, setEditing] = useState(null);
   const [vFlt, setVFlt] = useState("");
   const [view, setView] = useState("orders"); // orders | settle
@@ -1815,7 +1837,7 @@ function OrderModule({ data, update, user, users, logAudit }) {
   const [selected, setSelected] = useState(new Set());
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
-  const [storeTab, setStoreTab] = useState("");
+  const [storeTab, setStoreTab] = usePersisted("pl_orders_storeTab", "");
   const curStore = stores.some((s) => s.id === storeTab) ? storeTab : (stores[0]?.id || "");
   const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
   const venOf = (id) => data.vendors.find((v) => v.id === id)?.name || "—";
@@ -2006,7 +2028,7 @@ function OrderModule({ data, update, user, users, logAudit }) {
 
 /* ── 月結對帳・匯款區：當月月結叫貨，次月憑廠商發票匯款 ── */
 function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
-  const [settleMonth, setSettleMonth] = useState(prevMonth(monthOf(todayStr())));
+  const [settleMonth, setSettleMonth] = usePersisted("pl_settle_month", prevMonth(monthOf(todayStr())));
   const [open, setOpen] = useState(null);
   const today = todayStr();
 
@@ -2380,8 +2402,8 @@ function computeMonthReport(data, month, storeFilter) {
 }
 
 function ReportModule({ data, user, users }) {
-  const [month, setMonth] = useState(monthOf(todayStr()));
-  const [storeFilter, setStoreFilter] = useState(null);
+  const [month, setMonth] = usePersisted("pl_report_month", monthOf(todayStr()));
+  const [storeFilter, setStoreFilter] = usePersisted("pl_report_storeFilter", null);
   const cur = computeMonthReport(data, month, storeFilter);
   const prev = computeMonthReport(data, prevMonth(month), storeFilter);
   const stores = data.stores.filter((s) => s.retail && s.active);
@@ -2883,7 +2905,7 @@ function StoreMaster({ data, update, profiles }) {
 }
 
 function TargetMaster({ data, update }) {
-  const [month, setMonth] = useState(monthOf(todayStr()));
+  const [month, setMonth] = usePersisted("pl_target_month", monthOf(todayStr()));
   const retail = data.stores.filter((s) => s.retail && s.active);
   const tgt = data.targets[month] || {};
   const set = (sid, v) => update((d) => ({ ...d, targets: { ...d.targets, [month]: { ...(d.targets[month] || {}), [sid]: num(v) } } }));
@@ -3444,9 +3466,9 @@ function ImportModule({ data, update, user }) {
 function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto }) {
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && s.retail && (!scope || scope.includes(s.id)));
-  const [storeTab, setStoreTab] = useState("");
+  const [storeTab, setStoreTab] = usePersisted("pl_daily_storeTab", "");
   const curStore = stores.some((s) => s.id === storeTab) ? storeTab : (stores[0]?.id || "");
-  const [date, setDate] = useState(todayStr());
+  const [date, setDate] = usePersisted("pl_daily_date", todayStr());
   const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
   const venOf = (id) => data.vendors.find((v) => v.id === id)?.name || "—";
   const catOf = (id) => data.categories.find((c) => c.id === id)?.name || "—";
@@ -3940,8 +3962,8 @@ function App() {
     const h = window.location.hash.replace("#", "");
     return NAV.some(([k]) => k === h) ? h : "dashboard";
   });
-  const [month, setMonth] = useState(monthOf(todayStr()));
-  const [storeFilter, setStoreFilter] = useState(null);
+  const [month, setMonth] = usePersisted("pl_dash_month", monthOf(todayStr()));
+  const [storeFilter, setStoreFilter] = usePersisted("pl_dash_storeFilter", null);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
   const saveTimer = useRef(null);
   const firstLoad = useRef(true);
