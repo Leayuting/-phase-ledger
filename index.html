@@ -315,7 +315,7 @@ function buildSeedData() {
     stores: STORE_SEED, vendors: VENDOR_SEED, categories: CATEGORY_SEED,
     dailySales, expenses, incomes, orders, receivables, targets,
     fixedItems: FIXED_SEED, incomeCategories: INCOME_CAT_SEED,
-    auditLogs: [], approvalLogs: [],
+    auditLogs: [], approvalLogs: [], payables: [],
   };
 }
 
@@ -2031,25 +2031,29 @@ function OrderModule({ data, update, user, users, logAudit }) {
 }
 
 /* ── 月結對帳・匯款區：當月月結叫貨，次月憑廠商發票匯款 ── */
+/* 月結廠商以「一個月一張統一發票」為原則：叫貨明細先按廠商＋月份彙整成一筆應付帳款，
+   不要求每筆叫貨都個別綁發票；廠商開立統一發票後，使用者在該應付帳款登錄發票號碼／金額／
+   附件，系統自動核對發票金額與已彙整的叫貨總金額，兩者不一致時要求填寫差異原因才能儲存。 */
 function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
   const [settleMonth, setSettleMonth] = usePersisted("pl_settle_month", prevMonth(monthOf(todayStr())));
   const [open, setOpen] = useState(null);
+  const [invoiceEditing, setInvoiceEditing] = useState(null); // { vid, period, ...payable }
   const today = todayStr();
 
   const monthly = data.orders.filter((o) =>
     o.billing === "月結" && monthOf(o.date) === settleMonth && (!scope || scope.includes(o.storeId))
   );
 
-  /* 依廠商彙整 */
+  /* 依廠商彙整；每組（廠商＋月份）對應唯一一筆應付帳款（可能尚未建立） */
   const byVendor = {};
   monthly.forEach((o) => { (byVendor[o.vendorId] = byVendor[o.vendorId] || []).push(o); });
   const groups = Object.entries(byVendor).map(([vid, list]) => {
     const total = list.reduce((a, o) => a + num(o.amount), 0);
-    const invIn = list.filter((o) => o.invoiceStatus === "已收到").length;
     const unpaid = list.filter((o) => o.payStatus !== "已付款");
     const dueDates = list.map((o) => o.dueDate).filter(Boolean).sort(cmpDate);
     const overdue = unpaid.some((o) => o.dueDate && cmpDate(o.dueDate, today) < 0);
-    return { vid, list, total, invIn, invAll: list.length, unpaid, due: dueDates[0] || "—", overdue };
+    const payable = (data.payables || []).find((p) => p.vendorId === vid && p.period === settleMonth) || null;
+    return { vid, list, total, unpaid, due: dueDates[0] || "—", overdue, payable };
   }).sort((a, b) => b.total - a.total);
 
   const totalAll = groups.reduce((a, g) => a + g.total, 0);
@@ -2057,8 +2061,10 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
 
   const settle = (g) => {
     if (g.unpaid.length === 0) return;
-    if (g.invIn < g.invAll) {
-      if (!confirm(`${venOf(g.vid)} 尚有 ${g.invAll - g.invIn} 筆發票未收到。月結應憑發票匯款，仍要確認匯款？`)) return;
+    if (!g.payable) {
+      if (!confirm(`${venOf(g.vid)} 這個月尚未登錄統一發票。月結應憑發票匯款，仍要確認匯款？`)) return;
+    } else if (g.payable.status === "金額不符") {
+      if (!confirm(`${venOf(g.vid)} 這個月的發票金額與叫貨總額不符（原因：${g.payable.discrepancyReason || "未填寫"}）。仍要確認匯款？`)) return;
     } else {
       if (!confirm(`確認已匯款給 ${venOf(g.vid)}？將把 ${g.unpaid.length} 筆月結叫貨標記為已付款（付款日 ${today}）。`)) return;
     }
@@ -2070,8 +2076,32 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
     }));
   };
 
-  const markInvoice = (o) => {
-    update((d) => ({ ...d, orders: d.orders.map((x) => x.id === o.id ? { ...x, invoiceStatus: "已收到" } : x) }));
+  const openInvoiceForm = (g) => {
+    setInvoiceEditing(g.payable
+      ? { ...g.payable }
+      : { id: null, vendorId: g.vid, period: settleMonth, invoiceNo: "", invoiceAmount: "", invoiceDate: today, attachment: null, discrepancyReason: "" });
+  };
+
+  const saveInvoice = (form, ordersTotal) => {
+    if (!form.invoiceNo.trim()) return alert("請填寫發票號碼");
+    if (!validDate(form.invoiceDate)) return alert("請填寫正確發票日期（YYYY/MM/DD）");
+    const invoiceAmount = num(form.invoiceAmount);
+    if (invoiceAmount <= 0) return alert("發票金額需大於 0");
+    const diff = invoiceAmount - ordersTotal;
+    if (diff !== 0 && !form.discrepancyReason.trim()) {
+      return alert(`發票金額（${fmt(invoiceAmount)}）與本月彙整的叫貨總額（${fmt(ordersTotal)}）不一致，差異 ${fmt(diff)}，請先填寫差異原因才能儲存。`);
+    }
+    const rec = {
+      ...form, invoiceAmount, ordersTotal, discrepancy: diff,
+      status: diff === 0 ? "已核對" : "金額不符",
+    };
+    if (!rec.id) {
+      rec.id = uid("ap"); rec.createdBy = user.id; rec.createdAt = nowStamp();
+      update((d) => ({ ...d, payables: [...(d.payables || []), rec] }));
+    } else {
+      update((d) => ({ ...d, payables: (d.payables || []).map((p) => p.id === rec.id ? rec : p) }));
+    }
+    setInvoiceEditing(null);
   };
 
   return (
@@ -2086,7 +2116,8 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
       </div>
 
       <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 10 }}>
-        彙整 {monthLabel(settleMonth)}各廠商月結叫貨，於次月憑廠商發票進行匯款；發票未齊時匯款前會提醒確認。
+        彙整 {monthLabel(settleMonth)}各廠商月結叫貨。月結廠商原則上一個月開立一張統一發票，不需要每筆叫貨都個別綁發票——
+        叫貨明細先歸屬在這裡，等廠商開立統一發票後，於該廠商登錄發票號碼／金額／附件即可，系統會自動核對發票金額跟叫貨總額。
       </div>
 
       {groups.length === 0 && <div className="pl-card" style={{ padding: 24 }}><Empty text="此月份沒有月結叫貨紀錄" /></div>}
@@ -2098,12 +2129,17 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
             <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 120 }}>{venOf(g.vid)}</div>
             <div style={{ fontSize: 13, color: T.sub }}>{g.list.length} 筆</div>
             <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(g.total)}</div>
-            <Badge text={`發票 ${g.invIn}/${g.invAll}`} tone={g.invIn === g.invAll ? "green" : "yellow"} />
+            {!g.payable && <Badge text="尚未登錄統一發票" tone="yellow" />}
+            {g.payable && g.payable.status === "已核對" && <Badge text={`發票已核對・${g.payable.invoiceNo}`} tone="green" />}
+            {g.payable && g.payable.status === "金額不符" && <Badge text={`發票金額不符（差 ${fmt(g.payable.discrepancy)}）`} tone="red" />}
             {g.unpaid.length === 0
               ? <Badge text="已匯款" tone="green" />
               : <Badge text={g.overdue ? "已逾期未匯" : "待匯款"} tone={g.overdue ? "red" : "yellow"} />}
             <div style={{ fontSize: 12.5, color: T.sub }}>預計付款日 {g.due}</div>
             <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+              <button className="pl-btn small" onClick={(e) => { e.stopPropagation(); openInvoiceForm(g); }}>
+                {g.payable ? "編輯統一發票" : "登錄統一發票"}
+              </button>
               {g.unpaid.length > 0 && (
                 <button className="pl-btn primary" onClick={(e) => { e.stopPropagation(); settle(g); }}>
                   確認匯款 {fmt(g.unpaid.reduce((a, o) => a + num(o.amount), 0))}
@@ -2113,12 +2149,20 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
             </div>
           </div>
 
+          {g.payable && (
+            <div style={{ padding: "0 16px 12px", fontSize: 12.5, color: T.sub }}>
+              統一發票 {g.payable.invoiceNo}・{g.payable.invoiceDate}・發票金額 {fmt(g.payable.invoiceAmount)}
+              {g.payable.status === "金額不符" && <span style={{ color: T.red }}>・差異原因：{g.payable.discrepancyReason}</span>}
+              {g.payable.attachment && <> ・<AttachmentView value={g.payable.attachment} /></>}
+            </div>
+          )}
+
           {open === g.vid && (
             <div className="pl-scroll-x" style={{ borderTop: `1px solid ${T.line}` }}>
               <table className="pl-table">
                 <thead><tr>
                   <th>日期</th><th>門店</th><th>品項</th>
-                  <th className="num">金額</th><th>發票</th><th>預計付款日</th><th>付款狀態</th><th></th>
+                  <th className="num">金額</th><th>預計付款日</th><th>付款狀態</th><th></th>
                 </tr></thead>
                 <tbody>
                   {g.list.sort((a, b) => cmpDate(a.date, b.date)).map((o) => (
@@ -2127,12 +2171,6 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
                       <td>{nameOf(o.storeId)}</td>
                       <td>{o.items}</td>
                       <td className="num" style={{ fontWeight: 600 }}>{fmtN(o.amount)}</td>
-                      <td>
-                        <Badge text={o.invoiceStatus} tone={o.invoiceStatus === "已收到" ? "green" : "yellow"} />
-                        {o.invoiceStatus !== "已收到" && (
-                          <>{" "}<button className="pl-btn small" onClick={() => markInvoice(o)}>收到發票</button></>
-                        )}
-                      </td>
                       <td style={{ whiteSpace: "nowrap", color: o.payStatus !== "已付款" && o.dueDate && cmpDate(o.dueDate, today) < 0 ? T.red : T.ink }}>{o.dueDate || "—"}</td>
                       <td>
                         <Badge text={o.payStatus} tone={o.payStatus === "已付款" ? "green" : "yellow"} />
@@ -2147,7 +2185,44 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
           )}
         </div>
       ))}
+
+      {invoiceEditing && (() => {
+        const g = groups.find((x) => x.vid === invoiceEditing.vendorId);
+        const ordersTotal = g ? g.total : 0;
+        return (
+          <PayableInvoiceForm form={invoiceEditing} setForm={setInvoiceEditing} vendorName={venOf(invoiceEditing.vendorId)}
+            ordersTotal={ordersTotal} onSave={(f) => saveInvoice(f, ordersTotal)} onClose={() => setInvoiceEditing(null)} />
+        );
+      })()}
     </div>
+  );
+}
+
+function PayableInvoiceForm({ form, setForm, vendorName, ordersTotal, onSave, onClose }) {
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const diff = num(form.invoiceAmount) - ordersTotal;
+  return (
+    <Modal title={`登錄統一發票・${vendorName}・${monthLabel(form.period)}`} onClose={onClose} width={560}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+        <Field label="本月叫貨總額（系統彙整，唯讀）"><input className="pl-input" value={fmt(ordersTotal)} disabled /></Field>
+        <Field label="發票號碼" required><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} placeholder="AB-12345678" /></Field>
+        <Field label="發票金額" required><input className="pl-input" inputMode="decimal" value={form.invoiceAmount} onChange={set("invoiceAmount")} /></Field>
+        <Field label="發票日期" required><input className="pl-input" value={form.invoiceDate} onChange={set("invoiceDate")} placeholder="YYYY/MM/DD" /></Field>
+        <Field label="發票附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
+      </div>
+      {form.invoiceAmount !== "" && diff !== 0 && (
+        <div style={{ marginTop: 12, background: T.redBg, borderRadius: 8, padding: 10 }}>
+          <div style={{ color: T.red, fontSize: 13, marginBottom: 6 }}>
+            發票金額與叫貨總額不一致，差異 {fmt(diff)}（{diff > 0 ? "發票較高" : "發票較低"}），請填寫原因才能儲存。
+          </div>
+          <input className="pl-input" value={form.discrepancyReason} onChange={set("discrepancyReason")} placeholder="差異原因（例：含運費、折讓、單筆漏登）" />
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+        <button className="pl-btn" onClick={onClose}>取消</button>
+        <button className="pl-btn primary" onClick={() => onSave(form)}>儲存</button>
+      </div>
+    </Modal>
   );
 }
 
