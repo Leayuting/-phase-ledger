@@ -323,7 +323,7 @@ function buildSeedData() {
     version: 1,
     stores: STORE_SEED, vendors: VENDOR_SEED, categories: CATEGORY_SEED,
     dailySales, expenses, incomes, orders, receivables, targets,
-    fixedItems: FIXED_SEED, incomeCategories: INCOME_CAT_SEED,
+    fixedItems: FIXED_SEED, fixedIncomeItems: [], incomeCategories: INCOME_CAT_SEED,
     auditLogs: [], approvalLogs: [], payables: [],
   };
 }
@@ -1547,6 +1547,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
       date, storeId: curStore, categoryId: f.categoryId, item: f.item,
       amount: num(f.amount), payMethod: f.payMethod || "銀行轉帳",
       payer: user.name, status: "過審", fixedItemId: f.id,
+      docType: NO_DOC, noDocReason: "固定支出項目自動帶入，如有憑證請補件",
       note: "固定支出帶入", createdBy: user.id, createdAt: nowStamp(),
       reviewedBy: null, reviewedAt: null,
     }));
@@ -1740,12 +1741,42 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
     setSelected(new Set());
   };
 
+  /* 本月固定收入帶入 */
+  const fixedForStore = (data.fixedIncomeItems || []).filter((f) => f.active && f.storeId === curStore);
+  const fixedDone = fixedForStore.filter((f) =>
+    (data.incomes || []).some((r) => r.fixedItemId === f.id && monthOf(r.date) === month)
+  );
+  const fixedTodo = fixedForStore.filter((f) => !fixedDone.includes(f));
+
+  const genFixed = () => {
+    if (fixedTodo.length === 0) return;
+    if (!confirm(`將帶入 ${nameOf(curStore)} ${monthLabel(month)}共 ${fixedTodo.length} 筆固定收入（直接入帳），金額可再逐筆修改。確定？`)) return;
+    const date = month + "/01";
+    const recs = fixedTodo.map((f) => ({
+      /* 固定收入項目本來就是預先核准的常態收入，帶入時跳過草稿／待審核，直接入帳 */
+      ...INC_EMPTY, id: uid("in"),
+      date, storeId: curStore, categoryId: f.categoryId, item: f.item,
+      amount: num(f.amount), payMethod: f.payMethod || "銀行轉帳",
+      payer: user.name, status: "過審", fixedItemId: f.id,
+      docType: NO_DOC, noDocReason: "固定收入項目自動帶入，如有憑證請補件",
+      note: "固定收入帶入", createdBy: user.id, createdAt: nowStamp(),
+      reviewedBy: null, reviewedAt: null,
+    }));
+    update((d) => ({ ...d, incomes: [...(d.incomes || []), ...recs] }));
+  };
+
   return (
     <div>
       <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
         <MonthPicker value={month} onChange={setMonth} />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ color: T.sub, fontSize: 13 }}>共 {rows.length} 筆・合計 <b style={{ color: T.green }}>{fmt(total)}</b></span>
+          {fixedForStore.length > 0 && (
+            <button className="pl-btn" disabled={fixedTodo.length === 0} onClick={genFixed}
+              title={fixedTodo.length === 0 ? "本月固定收入已全部帶入" : ""}>
+              {fixedTodo.length === 0 ? "✓ 本月固定收入已帶入" : `帶入本月固定收入（${fixedTodo.length}）`}
+            </button>
+          )}
           <button className="pl-btn primary" style={{ background: T.green, borderColor: T.green }}
             onClick={() => setEditing({ ...INC_EMPTY, id: null, date: todayStr(), storeId: curStore, payer: user.name, status: "草稿" })}>
             ＋ 新增收入
@@ -2928,7 +2959,7 @@ function AnnualReportTab({ data, update, user }) {
 function MasterModule({ data, update, user, profiles }) {
   const [tab, setTab] = useState("vendors");
   if (!perm.canMaster(user)) return <Empty text="主檔管理僅開放系統管理者。" />;
-  const tabs = [["vendors", "廠商主檔"], ["categories", "類別管理"], ["fixed", "固定支出項目"], ["stores", "門店主檔"], ["targets", "營業額目標"], ["users", "使用者"]];
+  const tabs = [["vendors", "廠商主檔"], ["categories", "類別管理"], ["fixed", "固定支出／收入項目"], ["stores", "門店主檔"], ["targets", "營業額目標"], ["users", "使用者"]];
   return (
     <div>
       <SectionTitle>主檔管理</SectionTitle>
@@ -3051,7 +3082,8 @@ function CategoryMaster({ data, update }) {
       return { n: n + f + o, desc: [n ? `${n} 筆支出` : "", f ? `${f} 項固定支出` : "", o ? `${o} 筆廠商叫貨` : ""].filter(Boolean).join("、") };
     }
     const n = (data.incomes || []).filter((r) => r.categoryId === c.id).length;
-    return { n, desc: n ? `${n} 筆收入` : "" };
+    const f = (data.fixedIncomeItems || []).filter((r) => r.categoryId === c.id).length;
+    return { n: n + f, desc: [n ? `${n} 筆收入` : "", f ? `${f} 項固定收入` : ""].filter(Boolean).join("、") };
   };
 
   const add = () => {
@@ -3139,29 +3171,37 @@ function CategoryMaster({ data, update }) {
 }
 
 function FixedMaster({ data, update }) {
+  const [fkind, setFkind] = useState("expense"); // expense | income
+  const isExp = fkind === "expense";
   const stores = data.stores.filter((s) => s.active);
-  const cats = data.categories.filter((c) => c.active);
+  const cats = (isExp ? data.categories : data.incomeCategories).filter((c) => c.active);
   const [storeId, setStoreId] = useState(stores[0]?.id || "");
   const [form, setForm] = useState({ categoryId: "", item: "", amount: "", payMethod: "銀行轉帳" });
-  const items = (data.fixedItems || []).filter((f) => f.storeId === storeId);
-  const catOf = (id) => data.categories.find((c) => c.id === id)?.name || "—";
+  const listKey = isExp ? "fixedItems" : "fixedIncomeItems";
+  const items = (data[listKey] || []).filter((f) => f.storeId === storeId);
+  const catOf = (id) => (isExp ? data.categories : data.incomeCategories).find((c) => c.id === id)?.name || "—";
 
   const add = () => {
-    if (!form.categoryId) return alert("請選擇支出類別");
+    if (!form.categoryId) return alert(isExp ? "請選擇支出類別" : "請選擇收入類別");
     if (!form.item.trim()) return alert("請填寫項目名稱");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
     update((d) => ({
       ...d,
-      fixedItems: [...(d.fixedItems || []), { id: uid("fx"), storeId, categoryId: form.categoryId, item: form.item.trim(), amount: num(form.amount), payMethod: form.payMethod, active: true }],
+      [listKey]: [...(d[listKey] || []), { id: uid(isExp ? "fx" : "fi"), storeId, categoryId: form.categoryId, item: form.item.trim(), amount: num(form.amount), payMethod: form.payMethod, active: true }],
     }));
     setForm({ categoryId: "", item: "", amount: "", payMethod: "銀行轉帳" });
   };
-  const setAmt = (f, v) => update((d) => ({ ...d, fixedItems: d.fixedItems.map((x) => x.id === f.id ? { ...x, amount: num(v) } : x) }));
-  const toggle = (f) => update((d) => ({ ...d, fixedItems: d.fixedItems.map((x) => x.id === f.id ? { ...x, active: !x.active } : x) }));
-  const remove = (f) => { if (confirm(`刪除固定項目「${f.item}」？`)) update((d) => ({ ...d, fixedItems: d.fixedItems.filter((x) => x.id !== f.id) })); };
+  const setAmt = (f, v) => update((d) => ({ ...d, [listKey]: d[listKey].map((x) => x.id === f.id ? { ...x, amount: num(v) } : x) }));
+  const toggle = (f) => update((d) => ({ ...d, [listKey]: d[listKey].map((x) => x.id === f.id ? { ...x, active: !x.active } : x) }));
+  const remove = (f) => { if (confirm(`刪除固定項目「${f.item}」？`)) update((d) => ({ ...d, [listKey]: d[listKey].filter((x) => x.id !== f.id) })); };
 
   return (
     <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        <button className={"pl-btn small" + (fkind === "expense" ? " primary" : "")} onClick={() => { setFkind("expense"); setForm({ categoryId: "", item: "", amount: "", payMethod: "銀行轉帳" }); }}>固定支出</button>
+        <button className={"pl-btn small" + (fkind === "income" ? " primary" : "")} style={fkind === "income" ? { background: T.green, borderColor: T.green } : {}} onClick={() => { setFkind("income"); setForm({ categoryId: "", item: "", amount: "", payMethod: "銀行轉帳" }); }}>固定收入</button>
+      </div>
+
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
         {stores.map((s) => (
           <button key={s.id} className={"pl-btn small" + (storeId === s.id ? " primary" : "")} onClick={() => setStoreId(s.id)}>{s.name}</button>
@@ -3170,9 +3210,9 @@ function FixedMaster({ data, update }) {
 
       <div className="pl-card" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
         <select className="pl-input" style={{ width: 140 }} value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })}>
-          <option value="">支出類別</option>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          <option value="">{isExp ? "支出類別" : "收入類別"}</option>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        <input className="pl-input" style={{ width: 160 }} placeholder="項目名稱（如：店面租金）" value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })} />
+        <input className="pl-input" style={{ width: 160 }} placeholder={isExp ? "項目名稱（如：店面租金）" : "項目名稱（如：場地租借）"} value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })} />
         <input className="pl-input" style={{ width: 110 }} placeholder="每月金額" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
         <select className="pl-input" style={{ width: 140 }} value={form.payMethod} onChange={(e) => setForm({ ...form, payMethod: e.target.value })}>
           {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
@@ -3182,9 +3222,9 @@ function FixedMaster({ data, update }) {
 
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
-          <thead><tr><th>支出類別</th><th>項目</th><th className="num">每月金額（可直接修改）</th><th>付款方式</th><th>狀態</th><th></th></tr></thead>
+          <thead><tr><th>{isExp ? "支出類別" : "收入類別"}</th><th>項目</th><th className="num">每月金額（可直接修改）</th><th>{isExp ? "付款方式" : "收款方式"}</th><th>狀態</th><th></th></tr></thead>
           <tbody>
-            {items.length === 0 && <tr><td colSpan={6}><Empty text="此門店尚未設定固定支出項目" /></td></tr>}
+            {items.length === 0 && <tr><td colSpan={6}><Empty text={`此門店尚未設定固定${isExp ? "支出" : "收入"}項目`} /></td></tr>}
             {items.map((f) => (
               <tr key={f.id} style={f.active ? {} : { opacity: .5 }}>
                 <td>{catOf(f.categoryId)}</td>
@@ -3205,7 +3245,7 @@ function FixedMaster({ data, update }) {
         </table>
       </div>
       <div style={{ marginTop: 10, fontSize: 12.5, color: T.sub }}>
-        設定完成後，各門店可在「每日支出」頁面一鍵帶入當月固定支出（草稿），金額可逐筆調整後送審。
+        設定完成後，各門店可在「每日收支」頁面一鍵帶入當月固定{isExp ? "支出" : "收入"}，金額可逐筆調整後送審。
       </div>
     </div>
   );
@@ -3220,7 +3260,8 @@ function StoreMaster({ data, update, profiles }) {
       + data.expenses.filter((r) => r.storeId === s.id).length
       + (data.incomes || []).filter((r) => r.storeId === s.id).length
       + data.orders.filter((r) => r.storeId === s.id).length
-      + (data.fixedItems || []).filter((r) => r.storeId === s.id).length;
+      + (data.fixedItems || []).filter((r) => r.storeId === s.id).length
+      + (data.fixedIncomeItems || []).filter((r) => r.storeId === s.id).length;
     const children = data.stores.filter((x) => x.parentId === s.id).length;
     const usersAssigned = (profiles || []).filter((p) => p.storeId === s.id).length;
     return { n: n + children + usersAssigned, children, usersAssigned };
@@ -5632,6 +5673,7 @@ function App() {
       const stored = await loadData();
       if (stored) {
         if (!stored.fixedItems) stored.fixedItems = FIXED_SEED;
+        if (!stored.fixedIncomeItems) stored.fixedIncomeItems = [];
         if (!stored.incomes) stored.incomes = [];
         if (!stored.incomeCategories) stored.incomeCategories = INCOME_CAT_SEED;
         /* 公司共用併入中山店；烘豆場為獨立單位（帳務歸屬中山店） */
@@ -5649,6 +5691,7 @@ function App() {
         if (!stored.fixedItems.some((f) => f.storeId === "st4")) {
           stored.fixedItems = [...stored.fixedItems, ...FIXED_SEED.filter((f) => f.storeId === "st4")];
         }
+        stored.fixedIncomeItems = stored.fixedIncomeItems.filter((f) => !gone.includes(f.storeId));
         stored.orders = (stored.orders || []).map((o) => ORDER_BILLING.includes(o.billing) ? o : { ...o, billing: "現結" });
         /* 日結欄位改版：舊格式（含 cash 欄）轉為 每日營業額＋店家配合／信用卡／台灣Pay／LINE Pay */
         stored.dailySales = (stored.dailySales || []).map((r) => {
