@@ -6246,8 +6246,39 @@ function App() {
 }
 
 /* ── 系統設定 ── */
+/* 建立示範資料時固定用假的使用者 id（u1～u4，見 buildSeedData），這些 id 不會出現在真實
+   Supabase Auth 帳號裡（真實帳號的 id 是 UUID），可以用來精準辨識「哪些是系統當初自己
+   產生的示範交易紀錄」，而不會誤刪任何使用者自己實際輸入的資料 */
+const DEMO_CREATOR_IDS = new Set(["u1", "u2", "u3", "u4"]);
+const isDemoRecord = (r) => DEMO_CREATOR_IDS.has(r.createdBy);
+
 function SettingsModule({ data, update, user, setData, users }) {
   if (!perm.isAdmin(user)) return <Empty text="系統設定僅開放系統管理者。" />;
+
+  const demoCounts = {
+    dailySales: (data.dailySales || []).filter(isDemoRecord).length,
+    expenses: (data.expenses || []).filter(isDemoRecord).length,
+    incomes: (data.incomes || []).filter(isDemoRecord).length,
+    orders: (data.orders || []).filter(isDemoRecord).length,
+    receivables: (data.receivables || []).filter(isDemoRecord).length,
+  };
+  const demoTotal = Object.values(demoCounts).reduce((a, b) => a + b, 0);
+  const demoLabels = { dailySales: "每日營收", expenses: "每日支出", incomes: "門店收入", orders: "廠商叫貨", receivables: "應收帳款" };
+
+  const clearLeftoverDemo = () => {
+    if (demoTotal === 0) return alert("沒有偵測到殘留的示範資料，不需要清除。");
+    const detail = Object.entries(demoCounts).filter(([, n]) => n > 0).map(([k, n]) => `${demoLabels[k]} ${n} 筆`).join("、");
+    if (!confirm(`偵測到 ${demoTotal} 筆殘留示範資料（${detail}）。這些是系統剛建置時自動產生的假資料，跟你實際輸入的紀錄是分開判斷的，只會清掉這些假資料，不會動到任何真實資料。確定清除？`)) return;
+    update((d) => ({
+      ...d,
+      dailySales: (d.dailySales || []).filter((r) => !isDemoRecord(r)),
+      expenses: (d.expenses || []).filter((r) => !isDemoRecord(r)),
+      incomes: (d.incomes || []).filter((r) => !isDemoRecord(r)),
+      orders: (d.orders || []).filter((r) => !isDemoRecord(r)),
+      receivables: (d.receivables || []).filter((r) => !isDemoRecord(r)),
+    }));
+    alert(`已清除 ${demoTotal} 筆殘留示範資料。`);
+  };
 
   const clearDemo = () => {
     if (!confirm("將清除所有交易資料（日結、支出、叫貨、應收與紀錄），主檔保留。確定執行？")) return;
@@ -6268,9 +6299,19 @@ function SettingsModule({ data, update, user, setData, users }) {
           <button className="pl-btn primary" onClick={() => exportAllExcel(data, users)}>匯出 Excel</button>
         </div>
         <div style={{ borderTop: `1px solid ${T.line}`, paddingTop: 14 }}>
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>清除交易資料</div>
-          <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>清空示範交易，保留門店、廠商、類別與使用者主檔，開始正式使用。</div>
-          <button className="pl-btn danger" onClick={clearDemo}>清除交易資料</button>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>清除殘留示範資料</div>
+          <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>
+            精準辨識並只清掉系統當初建置時自動產生的假交易紀錄（用建立者不是真實帳號來判斷），
+            不會動到任何你自己實際輸入的真實資料。目前偵測到 <b style={{ color: demoTotal > 0 ? T.red : T.green }}>{demoTotal}</b> 筆殘留示範資料。
+          </div>
+          <button className="pl-btn danger" disabled={demoTotal === 0} onClick={clearLeftoverDemo}>
+            {demoTotal === 0 ? "沒有殘留示範資料" : `清除殘留示範資料（${demoTotal}）`}
+          </button>
+        </div>
+        <div style={{ borderTop: `1px solid ${T.line}`, paddingTop: 14 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>清除全部交易資料</div>
+          <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>清空「所有」交易資料（含真實資料），保留門店、廠商、類別與使用者主檔。僅在要整個重新開始記帳時使用。</div>
+          <button className="pl-btn danger" onClick={clearDemo}>清除全部交易資料</button>
         </div>
         <div style={{ borderTop: `1px solid ${T.line}`, paddingTop: 14 }}>
           <div style={{ fontWeight: 700, marginBottom: 4 }}>重設為示範狀態</div>
