@@ -3486,7 +3486,8 @@ function FixedMaster({ data, update }) {
   const add = () => {
     if (!form.categoryId) return alert(isExp ? "請選擇支出類別" : "請選擇收入類別");
     if (!form.item.trim()) return alert("請填寫項目名稱");
-    if (num(form.amount) <= 0) return alert("金額需大於 0");
+    /* 金額可以先不填：有些固定項目每個月金額不同（如水電費、業績抽成類收入），
+       先建立項目、每月帶入時再逐筆填實際金額（見 FixedBringInModal） */
     update((d) => ({
       ...d,
       [listKey]: [...(d[listKey] || []), { id: uid(isExp ? "fx" : "fi"), storeId, categoryId: form.categoryId, item: form.item.trim(), amount: num(form.amount), payMethod: form.payMethod, active: true }],
@@ -3515,7 +3516,7 @@ function FixedMaster({ data, update }) {
           <option value="">{isExp ? "支出類別" : "收入類別"}</option>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <input className="pl-input" style={{ width: 160 }} placeholder={isExp ? "項目名稱（如：店面租金）" : "項目名稱（如：場地租借）"} value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })} />
-        <input className="pl-input" style={{ width: 110 }} placeholder="每月金額" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+        <input className="pl-input" style={{ width: 110 }} placeholder="每月金額（可留空）" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
         <select className="pl-input" style={{ width: 140 }} value={form.payMethod} onChange={(e) => setForm({ ...form, payMethod: e.target.value })}>
           {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
         </select>
