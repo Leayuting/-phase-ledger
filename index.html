@@ -862,10 +862,6 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
         <KPI label="官網收入" value={fmt(onlineInc)} onClick={() => openDetail("官網收入明細", rowsFromInc(onlineIncRecs))} />
         <KPI label="其他收入" value={fmt(otherInc)} onClick={() => openDetail("其他收入明細", rowsFromInc(otherIncRecs))} />
         <KPI label="勤美設備出租收入" value={fmt(equipInc)} onClick={() => openDetail("勤美設備出租收入明細", rowsFromInc(equipIncRecs))} />
-        <KPI label="總收入" value={fmt(totalInc)} tone="green" onClick={() => openDetail("總收入組成", [
-          { item: "營業額", amount: revenue }, { item: "官網收入", amount: onlineInc },
-          { item: "其他收入", amount: otherInc }, { item: "勤美設備出租收入", amount: equipInc },
-        ])} />
         <KPI label="營業額達成率" value={achieve !== null ? `${achieve.toFixed(1)}%` : "尚未設定目標"}
           tone={achieve !== null ? (achieve >= 100 ? "green" : achieve >= 80 ? "yellow" : "red") : undefined}
           sub={tgtSum > 0 ? `目標 ${fmt(tgtSum)}・${achieve >= 100 ? "已達成" : `距 100% 尚差 ${(100 - achieve).toFixed(1)}%`}` : undefined} />
