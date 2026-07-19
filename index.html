@@ -1627,7 +1627,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   const [flt, setFlt] = useState(() => {
     let month = monthOf(todayStr());
     try { const v = localStorage.getItem("pl_expenses_month"); if (v) month = JSON.parse(v); } catch (e) { /* 忽略 */ }
-    return { month, date: "", storeId: "", categoryId: "", vendorId: "", payer: "", status: "" };
+    return { month, date: "", storeId: "", categoryText: "", vendorText: "", item: "", amount: "", payer: "", status: "" };
   });
   /* 只記住月份篩選，不記住其他篩選條件（類別/廠商/付款人等），避免重新整理後被舊篩選卡住 */
   useEffect(() => {
@@ -1646,8 +1646,10 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
     if (flt.date ? r.date !== flt.date : monthOf(r.date) !== flt.month) return false;
     if (!perm.canSeeRecord(user, r)) return false;
     if (r.storeId !== curStore) return false;
-    if (flt.categoryId && r.categoryId !== flt.categoryId) return false;
-    if (flt.vendorId && r.vendorId !== flt.vendorId) return false;
+    if (flt.categoryText && !catOf(r.categoryId).includes(flt.categoryText)) return false;
+    if (flt.vendorText && !venOf(r.vendorId).includes(flt.vendorText)) return false;
+    if (flt.item && !(r.item || "").includes(flt.item)) return false;
+    if (flt.amount && !String(num(r.amount)).includes(flt.amount)) return false;
     if (flt.payer && !(r.payer || "").includes(flt.payer)) return false;
     if (flt.status && r.status !== flt.status) return false;
     return true;
@@ -1778,12 +1780,12 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
           onPickDate={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })} />
         {flt.date && <Badge text={`精確日期：${flt.date}`} tone="brown" />}
         {flt.date && <button className="pl-btn small" onClick={() => setFlt({ ...flt, date: "" })}>清除日期</button>}
-        <select className="pl-input" style={{ width: 130 }} value={flt.categoryId} onChange={fset("categoryId")}>
-          <option value="">全部類別</option>{data.categories.filter(c=>c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select className="pl-input" style={{ width: 130 }} value={flt.vendorId} onChange={fset("vendorId")}>
-          <option value="">全部廠商</option>{data.vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-        </select>
+        <datalist id="dl-exp-flt-cat">{data.categories.filter(c => c.active).map((c) => <option key={c.id} value={c.name} />)}</datalist>
+        <datalist id="dl-exp-flt-vendor">{data.vendors.map((v) => <option key={v.id} value={v.name} />)}</datalist>
+        <input className="pl-input" style={{ width: 120 }} list="dl-exp-flt-cat" placeholder="搜尋類別" value={flt.categoryText} onChange={fset("categoryText")} />
+        <input className="pl-input" style={{ width: 120 }} list="dl-exp-flt-vendor" placeholder="搜尋廠商" value={flt.vendorText} onChange={fset("vendorText")} />
+        <input className="pl-input" style={{ width: 120 }} placeholder="搜尋品項" value={flt.item} onChange={fset("item")} />
+        <input className="pl-input" style={{ width: 100 }} placeholder="搜尋金額" inputMode="decimal" value={flt.amount} onChange={fset("amount")} />
         <input className="pl-input" style={{ width: 100 }} placeholder="付款人" value={flt.payer} onChange={fset("payer")} />
         <select className="pl-input" style={{ width: 110 }} value={flt.status} onChange={fset("status")}>
           <option value="">全部狀態</option>{EXP_STATUS.map((s) => <option key={s}>{s}</option>)}
