@@ -614,6 +614,37 @@ const acctStoreId = (stores, sid) => {
   return (s && s.parentId) || sid;
 };
 
+/* 廠商叫貨支出統計：原始金額仍由每日叫貨紀錄自動加總；若該廠商當月已有「未取消」的月結
+   對帳發票／請款金額，改採發票金額（讓 Dashboard／月報／年報跟實際應付金額一致）。
+   發票是廠商對「整個公司」開立的單一憑證，沒有拆分門店的資訊，所以只有在檢視「全部門店」
+   時才套用發票調整；篩選到單一門店時，無法正確拆分，一律仍用該門店的原始叫貨加總，
+   避免把整張發票金額誤植到單一門店。回傳 total（供 KPI／報表加總用）與 adjustments
+   （每個月結廠商的原始加總／發票金額／使用中的 payable，供明細下鑽或報表引用）。 */
+function adjustedOrderSum(data, month, storeFilter) {
+  const acctOf = (sid) => acctStoreId(data.stores, sid);
+  const ordM = data.orders.filter((o) => monthOf(o.date) === month && (!storeFilter || acctOf(o.storeId) === storeFilter));
+  const cashOrdM = ordM.filter((o) => o.billing !== "月結");
+  const monthlyOrdM = ordM.filter((o) => o.billing === "月結");
+  const vendorGroups = {};
+  monthlyOrdM.forEach((o) => { (vendorGroups[o.vendorId] = vendorGroups[o.vendorId] || []).push(o); });
+  let total = cashOrdM.reduce((a, o) => a + num(o.amount), 0);
+  const adjustments = [];
+  Object.entries(vendorGroups).forEach(([vid, list]) => {
+    const rawSum = list.reduce((a, o) => a + num(o.amount), 0);
+    const payable = !storeFilter
+      ? (data.payables || []).find((p) => p.vendorId === vid && p.period === month && !p.cancelled)
+      : null;
+    if (payable) {
+      total += num(payable.invoiceAmount);
+      adjustments.push({ vendorId: vid, rawSum, invoiceAmount: num(payable.invoiceAmount), payable, list });
+    } else {
+      total += rawSum;
+      adjustments.push({ vendorId: vid, rawSum, invoiceAmount: null, payable: null, list });
+    }
+  });
+  return { total, cashOrdM, adjustments };
+}
+
 const perm = {
   isAdmin: (u) => u.role === "系統管理者",
   isAcct: (u) => u.role === "會計" || u.role === "系統管理者",
@@ -676,7 +707,19 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
 
   const revenue = salesM.reduce((a, s) => a + calcSales(s).net, 0);
   const cashSum = salesM.reduce((a, s) => a + calcSales(s).cash, 0);
-  const ordSum = ordM.reduce((a, o) => a + num(o.amount), 0);
+  /* 廠商叫貨：月結廠商若有未取消的發票調整（只在「全部門店」時套用，發票沒有拆分門店），
+     採發票／請款金額；否則沿用原始叫貨累計金額 */
+  const { total: ordSum, cashOrdM: ordCashRecs, adjustments: ordAdjustments } = adjustedOrderSum(data, month, storeFilter);
+  const ordSumRows = [
+    ...ordCashRecs.map((o) => ({ date: o.date, store: nameOf(o.storeId), item: `${data.vendors.find((v) => v.id === o.vendorId)?.name || "—"}（現結）｜${o.items}`, amount: num(o.amount) })),
+    ...ordAdjustments.flatMap((a) => {
+      const vName = data.vendors.find((v) => v.id === a.vendorId)?.name || "—";
+      if (a.payable) {
+        return [{ date: "", store: "", item: `${vName}（月結・已依發票調整，原始叫貨 ${fmt(a.rawSum)}，發票 ${a.payable.invoiceNo}）`, amount: a.invoiceAmount }];
+      }
+      return a.list.map((o) => ({ date: o.date, store: nameOf(o.storeId), item: `${vName}（月結）｜${o.items}`, amount: num(o.amount) }));
+    }),
+  ];
 
   /* 收入拆分：官網收入／勤美設備出租收入為獨立類別，其餘收入類別一律歸入「其他收入」 */
   const onlineIncCatId = (data.incomeCategories || []).find((c) => c.name === "官網收入")?.id;
@@ -733,7 +776,6 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const [detail, setDetail] = useState(null);
   const rowsFromExp = (recs) => recs.map((e) => ({ date: e.date, store: nameOf(e.storeId), item: `${catById[e.categoryId]?.name || "—"}｜${e.item}`, amount: num(e.amount) }));
   const rowsFromInc = (recs) => recs.map((r) => ({ date: r.date, store: nameOf(r.storeId), item: `${incCatById[r.categoryId]?.name || "—"}｜${r.item}`, amount: num(r.amount) }));
-  const rowsFromOrd = (recs) => recs.map((o) => ({ date: o.date, store: nameOf(o.storeId), item: `${data.vendors.find((v) => v.id === o.vendorId)?.name || "—"}｜${o.items}`, amount: num(o.amount) }));
   const rowsFromSales = (recs) => recs.map((s) => ({ date: s.date, store: nameOf(s.storeId), item: "每日營業額", amount: calcSales(s).net }));
   const openDetail = (title, rows) => setDetail({ title, rows });
 
@@ -835,7 +877,7 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
 
       <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5, margin: "4px 0 10px" }}>支出</div>
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 20 }}>
-        <KPI label="廠商叫貨" value={fmt(ordSum)} onClick={() => openDetail("廠商叫貨明細", rowsFromOrd(ordM))} />
+        <KPI label="廠商叫貨" value={fmt(ordSum)} sub={storeFilter ? undefined : "月結廠商已套用發票調整"} onClick={() => openDetail("廠商叫貨明細", ordSumRows)} />
         <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細", rowsFromExp(dailyExpRecs))} />
         <KPI label="營業稅" value={fmt(bizTax)} onClick={() => openDetail("營業稅明細", rowsFromExp(taxRecs))} />
         <KPI label="租金－119號" value={fmt(rent119)} onClick={() => openDetail("租金－119號明細", rowsFromExp(rent119Recs))} />
@@ -2255,7 +2297,7 @@ function OrderModule({ data, update, user, users, logAudit }) {
       )}
 
       {view === "settle" && perm.isAcct(user) && (
-        <SettleSection data={data} update={update} user={user} logAudit={logAudit} scope={scope} nameOf={nameOf} venOf={venOf} />
+        <SettleSection data={data} update={update} user={user} users={users} logAudit={logAudit} scope={scope} nameOf={nameOf} venOf={venOf} />
       )}
 
       {view === "orders" && <>
@@ -2364,11 +2406,13 @@ function OrderModule({ data, update, user, users, logAudit }) {
 /* 月結廠商以「一個月一張統一發票」為原則：叫貨明細先按廠商＋月份彙整成一筆應付帳款，
    不要求每筆叫貨都個別綁發票；廠商開立統一發票後，使用者在該應付帳款登錄發票號碼／金額／
    附件，系統自動核對發票金額與已彙整的叫貨總金額，兩者不一致時要求填寫差異原因才能儲存。 */
-function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
+function SettleSection({ data, update, user, users, logAudit, scope, nameOf, venOf }) {
   const [settleMonth, setSettleMonth] = usePersisted("pl_settle_month", prevMonth(monthOf(todayStr())));
   const [open, setOpen] = useState(null);
   const [invoiceEditing, setInvoiceEditing] = useState(null); // { vid, period, ...payable }
+  const [cancelling, setCancelling] = useState(null); // { payable, rawSum, reason }
   const today = todayStr();
+  const userName = (id) => (users || []).find((u) => u.id === id)?.name || "—";
 
   const monthly = data.orders.filter((o) =>
     o.billing === "月結" && monthOf(o.date) === settleMonth && (!scope || scope.includes(o.storeId))
@@ -2391,7 +2435,7 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
 
   const settle = (g) => {
     if (g.unpaid.length === 0) return;
-    if (!g.payable) {
+    if (!g.payable || g.payable.cancelled) {
       if (!confirm(`${venOf(g.vid)} 這個月尚未登錄統一發票。月結應憑發票匯款，仍要確認匯款？`)) return;
     } else if (g.payable.status === "金額不符") {
       if (!confirm(`${venOf(g.vid)} 這個月的發票金額與叫貨總額不符（原因：${g.payable.discrepancyReason || "未填寫"}）。仍要確認匯款？`)) return;
@@ -2424,14 +2468,30 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
     const rec = {
       ...form, invoiceAmount, ordersTotal, discrepancy: diff,
       status: diff === 0 ? "已核對" : "金額不符",
+      /* 存檔（不論新增或編輯）一律視為重新套用發票調整，取消狀態自動解除 */
+      cancelled: false, cancelledBy: null, cancelledAt: null, cancelReason: "",
+      adjustedBy: user.id, adjustedAt: nowStamp(),
     };
     if (!rec.id) {
       rec.id = uid("ap"); rec.createdBy = user.id; rec.createdAt = nowStamp();
       update((d) => ({ ...d, payables: [...(d.payables || []), rec] }));
     } else {
+      const old = (data.payables || []).find((p) => p.id === rec.id);
+      logAudit("應付帳款", rec.id, old, rec, true);
       update((d) => ({ ...d, payables: (d.payables || []).map((p) => p.id === rec.id ? rec : p) }));
     }
     setInvoiceEditing(null);
+  };
+
+  const openCancel = (g) => setCancelling({ payable: g.payable, rawSum: g.total, reason: "" });
+
+  const confirmCancel = () => {
+    if (!cancelling.reason.trim()) return alert("請填寫取消原因");
+    const payable = cancelling.payable;
+    const rec = { ...payable, cancelled: true, cancelledBy: user.id, cancelledAt: nowStamp(), cancelReason: cancelling.reason.trim() };
+    logAudit("應付帳款", rec.id, payable, rec, true);
+    update((d) => ({ ...d, payables: (d.payables || []).map((p) => (p.id === rec.id ? rec : p)) }));
+    setCancelling(null);
   };
 
   return (
@@ -2458,10 +2518,18 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
             onClick={() => setOpen(open === g.vid ? null : g.vid)}>
             <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 120 }}>{venOf(g.vid)}</div>
             <div style={{ fontSize: 13, color: T.sub }}>{g.list.length} 筆</div>
-            <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(g.total)}</div>
-            {!g.payable && <Badge text="尚未登錄統一發票" tone="yellow" />}
-            {g.payable && g.payable.status === "已核對" && <Badge text={`發票已核對・${g.payable.invoiceNo}`} tone="green" />}
-            {g.payable && g.payable.status === "金額不符" && <Badge text={`發票金額不符（差 ${fmt(g.payable.discrepancy)}）`} tone="red" />}
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                {g.payable && !g.payable.cancelled ? fmt(g.payable.invoiceAmount) : fmt(g.total)}
+              </div>
+              {g.payable && !g.payable.cancelled && g.payable.invoiceAmount !== g.total && (
+                <div style={{ fontSize: 11.5, color: T.sub }}>原始叫貨 {fmt(g.total)}</div>
+              )}
+            </div>
+            {(!g.payable || g.payable.cancelled) && <Badge text="尚未登錄統一發票" tone="yellow" />}
+            {g.payable && !g.payable.cancelled && g.payable.status === "已核對" && <Badge text={`發票已核對・${g.payable.invoiceNo}`} tone="green" />}
+            {g.payable && !g.payable.cancelled && g.payable.status === "金額不符" && <Badge text={`發票金額不符（差 ${fmt(g.payable.discrepancy)}）`} tone="red" />}
+            {g.payable && g.payable.cancelled && <Badge text="發票調整已取消" tone="gray" />}
             {g.unpaid.length === 0
               ? <Badge text="已匯款" tone="green" />
               : <Badge text={g.overdue ? "已逾期未匯" : "待匯款"} tone={g.overdue ? "red" : "yellow"} />}
@@ -2470,6 +2538,11 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
               <button className="pl-btn small" onClick={(e) => { e.stopPropagation(); openInvoiceForm(g); }}>
                 {g.payable ? "編輯統一發票" : "登錄統一發票"}
               </button>
+              {g.payable && !g.payable.cancelled && (
+                <button className="pl-btn small danger" onClick={(e) => { e.stopPropagation(); openCancel(g); }}>
+                  取消發票調整
+                </button>
+              )}
               {g.unpaid.length > 0 && (
                 <button className="pl-btn primary" onClick={(e) => { e.stopPropagation(); settle(g); }}>
                   確認匯款 {fmt(g.unpaid.reduce((a, o) => a + num(o.amount), 0))}
@@ -2479,11 +2552,20 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
             </div>
           </div>
 
-          {g.payable && (
+          {g.payable && !g.payable.cancelled && (
             <div style={{ padding: "0 16px 12px", fontSize: 12.5, color: T.sub }}>
               統一發票 {g.payable.invoiceNo}・{g.payable.invoiceDate}・發票金額 {fmt(g.payable.invoiceAmount)}
+              ・原始叫貨累計 {fmt(g.payable.ordersTotal)}
+              {g.payable.discrepancy !== 0 && <>・調整差額 <b style={{ color: g.payable.discrepancy > 0 ? T.red : T.green }}>{g.payable.discrepancy > 0 ? "+" : ""}{fmt(g.payable.discrepancy)}</b></>}
               {g.payable.status === "金額不符" && <span style={{ color: T.red }}>・差異原因：{g.payable.discrepancyReason}</span>}
               {g.payable.attachment && <> ・<AttachmentView value={g.payable.attachment} /></>}
+              <br />調整人員 {userName(g.payable.adjustedBy || g.payable.createdBy)}・調整時間 {g.payable.adjustedAt || g.payable.createdAt}
+            </div>
+          )}
+          {g.payable && g.payable.cancelled && (
+            <div style={{ padding: "0 16px 12px", fontSize: 12.5, color: T.sub }}>
+              先前登錄的發票 {g.payable.invoiceNo}（金額 {fmt(g.payable.invoiceAmount)}）已取消調整，「廠商叫貨」統計恢復採原始叫貨累計 {fmt(g.payable.ordersTotal)}。
+              <br />取消原因：{g.payable.cancelReason}・取消人員 {userName(g.payable.cancelledBy)}・取消時間 {g.payable.cancelledAt}
             </div>
           )}
 
@@ -2524,6 +2606,23 @@ function SettleSection({ data, update, user, logAudit, scope, nameOf, venOf }) {
             ordersTotal={ordersTotal} onSave={(f) => saveInvoice(f, ordersTotal)} onClose={() => setInvoiceEditing(null)} />
         );
       })()}
+
+      {cancelling && (
+        <Modal title={`取消發票調整・${venOf(cancelling.payable.vendorId)}・${monthLabel(cancelling.payable.period)}`} onClose={() => setCancelling(null)} width={480}>
+          <div style={{ fontSize: 13, color: T.sub, marginBottom: 12 }}>
+            取消後，「廠商叫貨」統計（營運總覽／月報／年報）會恢復採用系統原始叫貨累計金額 {fmt(cancelling.rawSum)}，
+            不再套用發票金額 {fmt(cancelling.payable.invoiceAmount)}。這筆發票登錄紀錄仍會保留供查閱，之後也可以重新編輯套用。
+          </div>
+          <Field label="取消原因" required>
+            <input className="pl-input" value={cancelling.reason} onChange={(e) => setCancelling({ ...cancelling, reason: e.target.value })}
+              placeholder="例：發票金額登錄有誤、廠商重開發票" />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+            <button className="pl-btn" onClick={() => setCancelling(null)}>返回</button>
+            <button className="pl-btn danger" onClick={confirmCancel}>確定取消調整</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -2785,7 +2884,6 @@ function computeMonthReport(data, month, storeFilter) {
   const pick = (arr) => arr.filter((r) => monthOf(r.date) === month && (!storeFilter || acctOf(r.storeId) === storeFilter));
   const salesM = pick(data.dailySales);
   const expAll = pick(data.expenses).filter((e) => e.status !== "已退回" && e.categoryId !== ORDER_CAT_ID);
-  const ordM = pick(data.orders);
 
   const byStore = {};
   data.stores.filter((s) => s.retail).forEach((s) => {
@@ -2799,7 +2897,8 @@ function computeMonthReport(data, month, storeFilter) {
   const tgtSum = storeFilter ? num(tgt[storeFilter]) : data.stores.filter((s) => s.retail).reduce((a, s) => a + num(tgt[s.id]), 0);
 
   const catSum = (name) => expAll.filter((e) => catById[e.categoryId]?.name === name).reduce((a, e) => a + num(e.amount), 0);
-  const orders = ordM.reduce((a, o) => a + num(o.amount), 0);
+  /* 廠商叫貨：月結廠商有未取消的發票調整時（僅限「全部門店」）採發票金額，跟營運總覽口徑一致 */
+  const { total: orders, adjustments: ordAdjustments } = adjustedOrderSum(data, month, storeFilter);
   const named = ["租金", "水費", "電費", "瓦斯費", "勞保", "健保", "勞退", "人事成本", "稅金"];
   const namedSums = Object.fromEntries(named.map((n) => [n, catSum(n)]));
   const namedTotal = Object.values(namedSums).reduce((a, b) => a + b, 0);
@@ -2816,7 +2915,7 @@ function computeMonthReport(data, month, storeFilter) {
       ...named.map((n) => [n, namedSums[n]]),
       ["其他支出", Math.max(0, otherExp - general)],
     ],
-    orders, general, namedSums, otherFixed: Math.max(0, otherExp - general),
+    orders, ordAdjustments, general, namedSums, otherFixed: Math.max(0, otherExp - general),
     totalExp: orders + expTotal,
     profit: totalInc - (orders + expTotal),
   };
