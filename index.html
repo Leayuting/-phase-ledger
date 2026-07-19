@@ -1741,28 +1741,29 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
     setSelected(new Set());
   };
 
-  /* 本月固定收入帶入 */
+  /* 本月固定收入帶入：金額每月可能不同，帶入前先讓使用者逐筆確認／修改金額，
+     金額欄也可清空或改 0，代表先帶入項目、實際金額之後再自行填寫（見 FixedBringInModal） */
   const fixedForStore = (data.fixedIncomeItems || []).filter((f) => f.active && f.storeId === curStore);
   const fixedDone = fixedForStore.filter((f) =>
     (data.incomes || []).some((r) => r.fixedItemId === f.id && monthOf(r.date) === month)
   );
   const fixedTodo = fixedForStore.filter((f) => !fixedDone.includes(f));
+  const [fixedModalOpen, setFixedModalOpen] = useState(false);
 
-  const genFixed = () => {
-    if (fixedTodo.length === 0) return;
-    if (!confirm(`將帶入 ${nameOf(curStore)} ${monthLabel(month)}共 ${fixedTodo.length} 筆固定收入（直接入帳），金額可再逐筆修改。確定？`)) return;
+  const commitFixed = (picked) => {
     const date = month + "/01";
-    const recs = fixedTodo.map((f) => ({
+    const recs = picked.map((f) => ({
       /* 固定收入項目本來就是預先核准的常態收入，帶入時跳過草稿／待審核，直接入帳 */
       ...INC_EMPTY, id: uid("in"),
       date, storeId: curStore, categoryId: f.categoryId, item: f.item,
       amount: num(f.amount), payMethod: f.payMethod || "銀行轉帳",
       payer: user.name, status: "過審", fixedItemId: f.id,
-      docType: NO_DOC, noDocReason: "固定收入項目自動帶入，如有憑證請補件",
+      docType: NO_DOC, noDocReason: num(f.amount) > 0 ? "固定收入項目自動帶入，如有憑證請補件" : "固定收入項目先帶入項目，金額待補",
       note: "固定收入帶入", createdBy: user.id, createdAt: nowStamp(),
       reviewedBy: null, reviewedAt: null,
     }));
     update((d) => ({ ...d, incomes: [...(d.incomes || []), ...recs] }));
+    setFixedModalOpen(false);
   };
 
   return (
@@ -1772,7 +1773,7 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ color: T.sub, fontSize: 13 }}>共 {rows.length} 筆・合計 <b style={{ color: T.green }}>{fmt(total)}</b></span>
           {fixedForStore.length > 0 && (
-            <button className="pl-btn" disabled={fixedTodo.length === 0} onClick={genFixed}
+            <button className="pl-btn" disabled={fixedTodo.length === 0} onClick={() => setFixedModalOpen(true)}
               title={fixedTodo.length === 0 ? "本月固定收入已全部帶入" : ""}>
               {fixedTodo.length === 0 ? "✓ 本月固定收入已帶入" : `帶入本月固定收入（${fixedTodo.length}）`}
             </button>
@@ -1862,7 +1863,56 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
           </div>
         </Modal>
       )}
+
+      {fixedModalOpen && (
+        <FixedBringInModal items={fixedTodo} month={month} storeName={nameOf(curStore)} catOf={catOf}
+          onClose={() => setFixedModalOpen(false)} onCommit={commitFixed} />
+      )}
     </div>
+  );
+}
+
+/* 固定收入／支出帶入前的確認畫面：金額每月可能不同，預設帶入主檔設定值但可逐筆修改，
+   也可把金額清空或改 0，代表先帶入項目、實際金額之後再自行編輯填寫。 */
+function FixedBringInModal({ items, month, storeName, catOf, onClose, onCommit }) {
+  const [rows, setRows] = useState(items.map((f) => ({ ...f, checked: true, amount: String(f.amount) })));
+  const setRow = (id, patch) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const pickedCount = rows.filter((r) => r.checked).length;
+  const commit = () => {
+    const picked = rows.filter((r) => r.checked).map((r) => ({ ...r, amount: num(r.amount) }));
+    if (picked.length === 0) return alert("請至少選擇一項");
+    onCommit(picked);
+  };
+  return (
+    <Modal title={`帶入 ${storeName} ${monthLabel(month)} 固定收入`} onClose={onClose} width={640}>
+      <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 10 }}>
+        金額預設帶入主檔設定值，可依當月實際情況逐筆修改；金額欄清空或改 0，代表先帶入項目，實際金額之後再自行編輯填寫。
+      </div>
+      <div className="pl-scroll-x">
+        <table className="pl-table">
+          <thead><tr><th style={{ width: 30 }}></th><th>項目</th><th>類別</th><th className="num">金額</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={r.checked ? {} : { opacity: .5 }}>
+                <td><input type="checkbox" checked={r.checked} onChange={(e) => setRow(r.id, { checked: e.target.checked })} /></td>
+                <td>{r.item}</td>
+                <td>{catOf(r.categoryId)}</td>
+                <td className="num" style={{ width: 140 }}>
+                  <input className="pl-input" style={{ textAlign: "right" }} inputMode="decimal" value={r.amount}
+                    disabled={!r.checked} onChange={(e) => setRow(r.id, { amount: e.target.value })} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+        <button className="pl-btn" onClick={onClose}>取消</button>
+        <button className="pl-btn primary" style={{ background: T.green, borderColor: T.green }} onClick={commit}>
+          確定帶入（{pickedCount}）
+        </button>
+      </div>
+    </Modal>
   );
 }
 
