@@ -452,7 +452,7 @@ function KPI({ label, value, tone, sub, onClick }) {
     <div className="pl-card" style={{ padding: "14px 16px", minWidth: 0, cursor: onClick ? "pointer" : undefined }}
       onClick={onClick} title={onClick ? "點擊查看明細來源" : undefined}>
       <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 6, whiteSpace: "nowrap" }}>{label}</div>
-      <div className="pl-serif" style={{ fontSize: 21, fontWeight: 600, color: tone === "red" ? T.red : tone === "green" ? T.green : T.ink, whiteSpace: "nowrap" }}>{value}</div>
+      <div className="pl-serif" style={{ fontSize: 21, fontWeight: 600, color: tone === "red" ? T.red : tone === "green" ? T.green : tone === "yellow" ? T.yellow : T.ink, whiteSpace: "nowrap" }}>{value}</div>
       {sub && <div style={{ fontSize: 12, color: T.sub, marginTop: 4 }}>{sub}</div>}
     </div>
   );
@@ -824,8 +824,8 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
           { item: "其他收入", amount: otherInc }, { item: "勤美設備出租收入", amount: equipInc },
         ])} />
         <KPI label="營業額達成率" value={achieve !== null ? `${achieve.toFixed(1)}%` : "尚未設定目標"}
-          tone={achieve !== null ? (achieve >= 100 ? "green" : undefined) : undefined}
-          sub={tgtSum > 0 ? `目標 ${fmt(tgtSum)}` : undefined} />
+          tone={achieve !== null ? (achieve >= 100 ? "green" : achieve >= 80 ? "yellow" : "red") : undefined}
+          sub={tgtSum > 0 ? `目標 ${fmt(tgtSum)}・${achieve >= 100 ? "已達成" : `距 100% 尚差 ${(100 - achieve).toFixed(1)}%`}` : undefined} />
         <KPI label="實收營業額" value={fmt(actualRevenue)} tone="green" sub="＝營業額＋官網收入＋其他收入＋設備出租收入"
           onClick={() => openDetail("實收營業額組成", [
             { item: "營業額", amount: revenue }, { item: "官網收入", amount: onlineInc },
