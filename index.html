@@ -1627,7 +1627,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   const [flt, setFlt] = useState(() => {
     let month = monthOf(todayStr());
     try { const v = localStorage.getItem("pl_expenses_month"); if (v) month = JSON.parse(v); } catch (e) { /* 忽略 */ }
-    return { month, date: "", storeId: "", categoryId: "", vendorId: "", payer: "", status: "", min: "", max: "" };
+    return { month, date: "", storeId: "", categoryId: "", vendorId: "", payer: "", status: "" };
   });
   /* 只記住月份篩選，不記住其他篩選條件（類別/廠商/付款人等），避免重新整理後被舊篩選卡住 */
   useEffect(() => {
@@ -1650,8 +1650,6 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
     if (flt.vendorId && r.vendorId !== flt.vendorId) return false;
     if (flt.payer && !(r.payer || "").includes(flt.payer)) return false;
     if (flt.status && r.status !== flt.status) return false;
-    if (flt.min !== "" && num(r.amount) < num(flt.min)) return false;
-    if (flt.max !== "" && num(r.amount) > num(flt.max)) return false;
     return true;
   }).sort((a, b) => cmpDate(b.date, a.date));
 
@@ -1790,9 +1788,6 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
         <select className="pl-input" style={{ width: 110 }} value={flt.status} onChange={fset("status")}>
           <option value="">全部狀態</option>{EXP_STATUS.map((s) => <option key={s}>{s}</option>)}
         </select>
-        <input className="pl-input" style={{ width: 90 }} placeholder="金額下限" inputMode="decimal" value={flt.min} onChange={fset("min")} />
-        <span style={{ color: T.sub }}>—</span>
-        <input className="pl-input" style={{ width: 90 }} placeholder="金額上限" inputMode="decimal" value={flt.max} onChange={fset("max")} />
         <div style={{ marginLeft: "auto", color: T.sub, fontSize: 13 }}>共 {rows.length} 筆・合計 <b style={{ color: T.ink }}>{fmt(total)}</b></div>
       </div>
 
