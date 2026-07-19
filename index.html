@@ -66,6 +66,9 @@ const CATEGORY_SEED = [
   ["設備維修", false], ["包材", false], ["文具用品", false], ["清潔用品", false],
   ["保險", true], ["員工福利", false], ["差旅住宿", false], ["員工代墊", false],
   ["其他支出", false],
+  /* 以下為營運總覽（Dashboard）重構新增，附加在陣列最後，避免打亂前面既有項目的 catN 編號
+     （FIXED_SEED 是用固定 id 字串對應，前面項目順序改變會對不上） */
+  ["租金-119號", true], ["租金-121號", true], ["租金-烘豆場", true],
 ].map(([name, fixed], i) => ({ id: name === "廠商原料叫貨" ? ORDER_CAT_ID : "cat" + (i + 1), name, fixed, active: true }));
 
 const VENDOR_SEED = [
@@ -196,6 +199,8 @@ const INCOME_CAT_SEED = [
   { id: "ic4", name: "政府補助", active: true },
   { id: "ic5", name: "廠商回饋", active: true },
   { id: "ic6", name: "其他收入", active: true },
+  { id: "ic7", name: "官網收入", active: true },
+  { id: "ic8", name: "勤美設備出借收入", active: true },
 ];
 
 function buildSeedData() {
@@ -442,9 +447,10 @@ function Modal({ title, onClose, children, width = 720 }) {
   );
 }
 
-function KPI({ label, value, tone, sub }) {
+function KPI({ label, value, tone, sub, onClick }) {
   return (
-    <div className="pl-card" style={{ padding: "14px 16px", minWidth: 0 }}>
+    <div className="pl-card" style={{ padding: "14px 16px", minWidth: 0, cursor: onClick ? "pointer" : undefined }}
+      onClick={onClick} title={onClick ? "點擊查看明細來源" : undefined}>
       <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 6, whiteSpace: "nowrap" }}>{label}</div>
       <div className="pl-serif" style={{ fontSize: 21, fontWeight: 600, color: tone === "red" ? T.red : tone === "green" ? T.green : T.ink, whiteSpace: "nowrap" }}>{value}</div>
       {sub && <div style={{ fontSize: 12, color: T.sub, marginTop: 4 }}>{sub}</div>}
@@ -655,20 +661,66 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const acctOf = (sid) => acctStoreId(data.stores, sid);
   const inMonth = (r) => monthOf(r.date) === month && (!storeFilter || acctOf(r.storeId) === storeFilter);
   const catById = Object.fromEntries(data.categories.map((c) => [c.id, c]));
+  const incCatById = Object.fromEntries((data.incomeCategories || []).map((c) => [c.id, c]));
+  const nameOf = (id) => stores.find((s) => s.id === id)?.name || "—";
+  const userName = (id) => users.find((u) => u.id === id)?.name || "—";
+  /* 門店篩選只給「會計主體」層級選（中山店會自動含烘豆場，因為烘豆場的 parentId 是中山店），
+     不把烘豆場單獨列成一個可篩選門店，避免跟「中山店（含烘豆場）」的口徑對不起來 */
+  const topStores = stores.filter((s) => !s.parentId);
+  const childStoreNames = (sid) => stores.filter((s) => s.parentId === sid).map((s) => s.name);
 
   const salesM = data.dailySales.filter(inMonth);
   const expM = data.expenses.filter((r) => inMonth(r) && r.status !== "已退回" && r.categoryId !== ORDER_CAT_ID);
   const ordM = data.orders.filter(inMonth);
+  const incM = (data.incomes || []).filter((r) => inMonth(r) && r.status !== "已退回");
 
   const revenue = salesM.reduce((a, s) => a + calcSales(s).net, 0);
   const cashSum = salesM.reduce((a, s) => a + calcSales(s).cash, 0);
-  const incM = (data.incomes || []).filter((r) => inMonth(r) && r.status !== "已退回");
-  const bizInc = incM.reduce((a, r) => a + num(r.amount), 0);
-  const totalInc = revenue + bizInc;
   const ordSum = ordM.reduce((a, o) => a + num(o.amount), 0);
-  const fixedExp = expM.filter((e) => catById[e.categoryId]?.fixed).reduce((a, e) => a + num(e.amount), 0);
-  const generalExp = expM.filter((e) => !catById[e.categoryId]?.fixed).reduce((a, e) => a + num(e.amount), 0);
-  const totalExp = ordSum + fixedExp + generalExp;
+
+  /* 收入拆分：官網收入／勤美設備出借收入為獨立類別，其餘收入類別一律歸入「其他收入」 */
+  const onlineIncCatId = (data.incomeCategories || []).find((c) => c.name === "官網收入")?.id;
+  const equipIncCatId = (data.incomeCategories || []).find((c) => c.name === "勤美設備出借收入")?.id;
+  const onlineIncRecs = incM.filter((r) => r.categoryId === onlineIncCatId);
+  const equipIncRecs = incM.filter((r) => r.categoryId === equipIncCatId);
+  const otherIncRecs = incM.filter((r) => r.categoryId !== onlineIncCatId && r.categoryId !== equipIncCatId);
+  const onlineInc = onlineIncRecs.reduce((a, r) => a + num(r.amount), 0);
+  const equipInc = equipIncRecs.reduce((a, r) => a + num(r.amount), 0);
+  const otherInc = otherIncRecs.reduce((a, r) => a + num(r.amount), 0);
+  const totalInc = revenue + onlineInc + otherInc + equipInc;
+  /* 實收營業額：目前無獨立退款／折讓紀錄，依需求＝總收入（營業額＋官網收入＋其他收入＋設備出借收入） */
+  const actualRevenue = totalInc;
+
+  /* 支出拆分：租金依地址拆三筆、營業稅、電費、水費、勞保、勞退、健保、人事成本各自獨立列出，
+     其餘一律歸入「每日支出」（原本統稱一般支出的殘值桶） */
+  const rentCatId = {
+    n119: data.categories.find((c) => c.name === "租金-119號")?.id,
+    n121: data.categories.find((c) => c.name === "租金-121號")?.id,
+    roast: data.categories.find((c) => c.name === "租金-烘豆場")?.id,
+  };
+  const taxCatIds = [...new Set(["營業稅", "稅金"].map((n) => data.categories.find((c) => c.name === n)?.id).filter(Boolean))];
+  const namedExpCatId = (name) => data.categories.find((c) => c.name === name)?.id;
+  const elecCatId = namedExpCatId("電費");
+  const waterCatId = namedExpCatId("水費");
+  const laborInsCatId = namedExpCatId("勞保");
+  const pensionCatId = namedExpCatId("勞退");
+  const healthInsCatId = namedExpCatId("健保");
+  const payrollCatId = namedExpCatId("人事成本");
+  const expByCat = (id) => expM.filter((e) => e.categoryId === id);
+  const rent119Recs = expByCat(rentCatId.n119), rent121Recs = expByCat(rentCatId.n121), rentRoastRecs = expByCat(rentCatId.roast);
+  const taxRecs = expM.filter((e) => taxCatIds.includes(e.categoryId));
+  const elecRecs = expByCat(elecCatId), waterRecs = expByCat(waterCatId);
+  const laborInsRecs = expByCat(laborInsCatId), pensionRecs = expByCat(pensionCatId), healthInsRecs = expByCat(healthInsCatId);
+  const payrollRecs = expByCat(payrollCatId);
+  const sumAmt = (recs) => recs.reduce((a, e) => a + num(e.amount), 0);
+  const rent119 = sumAmt(rent119Recs), rent121 = sumAmt(rent121Recs), rentRoast = sumAmt(rentRoastRecs);
+  const bizTax = sumAmt(taxRecs), elecFee = sumAmt(elecRecs), waterFee = sumAmt(waterRecs);
+  const laborIns = sumAmt(laborInsRecs), pension = sumAmt(pensionRecs), healthIns = sumAmt(healthInsRecs), payroll = sumAmt(payrollRecs);
+  const itemizedExpIds = new Set([rentCatId.n119, rentCatId.n121, rentCatId.roast, ...taxCatIds,
+    elecCatId, waterCatId, laborInsCatId, pensionCatId, healthInsCatId, payrollCatId].filter(Boolean));
+  const dailyExpRecs = expM.filter((e) => !itemizedExpIds.has(e.categoryId));
+  const dailyExp = sumAmt(dailyExpRecs);
+  const totalExp = ordSum + dailyExp + bizTax + rent119 + rent121 + rentRoast + elecFee + waterFee + laborIns + pension + healthIns + payroll;
   const profit = totalInc - totalExp;
 
   const arUnpaid = data.receivables.filter((r) => r.status !== "呆帳").reduce((a, r) => a + Math.max(0, num(r.amount) - num(r.received)), 0);
@@ -676,6 +728,14 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const tgt = data.targets[month] || {};
   const tgtSum = storeFilter ? num(tgt[storeFilter]) : retail.reduce((a, s) => a + num(tgt[s.id]), 0);
   const achieve = tgtSum > 0 ? (revenue / tgtSum) * 100 : null;
+
+  /* 金額明細下鑽：點擊 KPI 卡片時顯示組成該金額的實際紀錄或子項目 */
+  const [detail, setDetail] = useState(null);
+  const rowsFromExp = (recs) => recs.map((e) => ({ date: e.date, store: nameOf(e.storeId), item: `${catById[e.categoryId]?.name || "—"}｜${e.item}`, amount: num(e.amount) }));
+  const rowsFromInc = (recs) => recs.map((r) => ({ date: r.date, store: nameOf(r.storeId), item: `${incCatById[r.categoryId]?.name || "—"}｜${r.item}`, amount: num(r.amount) }));
+  const rowsFromOrd = (recs) => recs.map((o) => ({ date: o.date, store: nameOf(o.storeId), item: `${data.vendors.find((v) => v.id === o.vendorId)?.name || "—"}｜${o.items}`, amount: num(o.amount) }));
+  const rowsFromSales = (recs) => recs.map((s) => ({ date: s.date, store: nameOf(s.storeId), item: "每日營業額", amount: calcSales(s).net }));
+  const openDetail = (title, rows) => setDetail({ title, rows });
 
   /* 圖表資料 */
   const [y, mo] = month.split("/").map(Number);
@@ -735,8 +795,6 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const pendingExp = data.expenses.filter((e) => e.status === "待審核");
   const overdueAR = data.receivables.filter((r) => r.dueDate && cmpDate(r.dueDate, today) < 0 && num(r.amount) - num(r.received) > 0 && r.status !== "呆帳");
   const overdueAP = data.orders.filter((o) => o.billing === "月結" && o.payStatus !== "已付款" && o.dueDate && cmpDate(o.dueDate, today) < 0);
-  const nameOf = (id) => stores.find((s) => s.id === id)?.name || "—";
-  const userName = (id) => users.find((u) => u.id === id)?.name || "—";
 
   const tooltipFmt = (v) => fmt(v);
   const gridStyle = { display: "grid", gap: 12 };
@@ -746,22 +804,75 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
       <SectionTitle right={
         <>
           <MonthPicker value={month} onChange={setMonth} />
-          <select className="pl-input" style={{ width: 130 }} value={storeFilter || ""} onChange={(e) => setStoreFilter(e.target.value || null)}>
+          <select className="pl-input" style={{ width: 190 }} value={storeFilter || ""} onChange={(e) => setStoreFilter(e.target.value || null)}>
             <option value="">全部門店</option>
-            {stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            {topStores.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}{childStoreNames(s.id).length ? `（含${childStoreNames(s.id).join("、")}）` : ""}</option>
+            ))}
           </select>
         </>
       }>營運總覽</SectionTitle>
 
+      <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5, margin: "4px 0 10px" }}>收入</div>
+      <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 20 }}>
+        <KPI label="營業額" value={fmt(revenue)} onClick={() => openDetail("營業額明細", rowsFromSales(salesM))} />
+        <KPI label="官網收入" value={fmt(onlineInc)} onClick={() => openDetail("官網收入明細", rowsFromInc(onlineIncRecs))} />
+        <KPI label="其他收入" value={fmt(otherInc)} onClick={() => openDetail("其他收入明細", rowsFromInc(otherIncRecs))} />
+        <KPI label="勤美設備出借收入" value={fmt(equipInc)} onClick={() => openDetail("勤美設備出借收入明細", rowsFromInc(equipIncRecs))} />
+        <KPI label="總收入" value={fmt(totalInc)} tone="green" onClick={() => openDetail("總收入組成", [
+          { item: "營業額", amount: revenue }, { item: "官網收入", amount: onlineInc },
+          { item: "其他收入", amount: otherInc }, { item: "勤美設備出借收入", amount: equipInc },
+        ])} />
+        <KPI label="營業額達成率" value={achieve !== null ? `${achieve.toFixed(1)}%` : "尚未設定目標"}
+          tone={achieve !== null ? (achieve >= 100 ? "green" : undefined) : undefined}
+          sub={tgtSum > 0 ? `目標 ${fmt(tgtSum)}` : undefined} />
+        <KPI label="實收營業額" value={fmt(actualRevenue)} tone="green" sub="＝營業額＋官網收入＋其他收入＋設備出借收入"
+          onClick={() => openDetail("實收營業額組成", [
+            { item: "營業額", amount: revenue }, { item: "官網收入", amount: onlineInc },
+            { item: "其他收入", amount: otherInc }, { item: "勤美設備出借收入", amount: equipInc },
+          ])} />
+      </div>
+
+      <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5, margin: "4px 0 10px" }}>支出</div>
+      <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 20 }}>
+        <KPI label="廠商叫貨" value={fmt(ordSum)} onClick={() => openDetail("廠商叫貨明細", rowsFromOrd(ordM))} />
+        <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細", rowsFromExp(dailyExpRecs))} />
+        <KPI label="營業稅" value={fmt(bizTax)} onClick={() => openDetail("營業稅明細", rowsFromExp(taxRecs))} />
+        <KPI label="租金－119號" value={fmt(rent119)} onClick={() => openDetail("租金－119號明細", rowsFromExp(rent119Recs))} />
+        <KPI label="租金－121號" value={fmt(rent121)} onClick={() => openDetail("租金－121號明細", rowsFromExp(rent121Recs))} />
+        <KPI label="租金－烘豆場" value={fmt(rentRoast)} onClick={() => openDetail("租金－烘豆場明細", rowsFromExp(rentRoastRecs))} />
+        <KPI label="電費" value={fmt(elecFee)} onClick={() => openDetail("電費明細", rowsFromExp(elecRecs))} />
+        <KPI label="水費" value={fmt(waterFee)} onClick={() => openDetail("水費明細", rowsFromExp(waterRecs))} />
+        <KPI label="勞保" value={fmt(laborIns)} onClick={() => openDetail("勞保明細", rowsFromExp(laborInsRecs))} />
+        <KPI label="勞退" value={fmt(pension)} onClick={() => openDetail("勞退明細", rowsFromExp(pensionRecs))} />
+        <KPI label="健保" value={fmt(healthIns)} onClick={() => openDetail("健保明細", rowsFromExp(healthInsRecs))} />
+        <KPI label="人事成本（薪資）" value={fmt(payroll)} onClick={() => openDetail("人事成本（薪資）明細", rowsFromExp(payrollRecs))} />
+        <KPI label="總支出" value={fmt(totalExp)} onClick={() => openDetail("總支出組成", [
+          { item: "廠商叫貨", amount: ordSum }, { item: "每日支出", amount: dailyExp }, { item: "營業稅", amount: bizTax },
+          { item: "租金－119號", amount: rent119 }, { item: "租金－121號", amount: rent121 }, { item: "租金－烘豆場", amount: rentRoast },
+          { item: "電費", amount: elecFee }, { item: "水費", amount: waterFee }, { item: "勞保", amount: laborIns },
+          { item: "勞退", amount: pension }, { item: "健保", amount: healthIns }, { item: "人事成本（薪資）", amount: payroll },
+        ])} />
+      </div>
+
+      <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5, margin: "4px 0 10px" }}>營運成果</div>
+      <div className="pl-card" style={{
+          padding: 26, textAlign: "center", marginBottom: 20, cursor: "pointer",
+          background: profit > 0 ? T.greenBg : profit < 0 ? T.redBg : "#F0EDE7",
+          border: `1px solid ${profit > 0 ? T.green : profit < 0 ? T.red : T.line}`,
+        }}
+        onClick={() => openDetail("目前盈餘組成", [{ item: "總收入", amount: totalInc }, { item: "總支出", amount: -totalExp }])}>
+        <div style={{ fontSize: 13.5, color: T.sub, marginBottom: 8 }}>
+          目前盈餘・{storeFilter ? (stores.find((s) => s.id === storeFilter)?.name || "") : "全部門店"}・{monthLabel(month)}
+        </div>
+        <div className="pl-serif" style={{ fontSize: 38, fontWeight: 700, color: profit > 0 ? T.green : profit < 0 ? T.red : T.sub }}>
+          {fmt(profit)}
+        </div>
+        <div style={{ fontSize: 12.5, color: T.sub, marginTop: 6 }}>{profit > 0 ? "盈餘" : profit < 0 ? "虧損" : "損益兩平"}</div>
+      </div>
+
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 16 }}>
-        <KPI label="本月營業額" value={fmt(revenue)} sub={achieve !== null ? `目標達成率 ${achieve.toFixed(1)}%` : "尚未設定目標"} />
         <KPI label="現金收入（推算）" value={fmt(cashSum)} />
-        <KPI label="本月總收入" value={fmt(totalInc)} tone="green" />
-        <KPI label="本月廠商叫貨" value={fmt(ordSum)} />
-        <KPI label="本月一般支出" value={fmt(generalExp)} />
-        <KPI label="本月固定支出" value={fmt(fixedExp)} />
-        <KPI label="本月總支出" value={fmt(totalExp)} />
-        <KPI label="本月損益" value={fmt(profit)} tone={profit >= 0 ? "green" : "red"} />
         <KPI label="應收未收金額" value={fmt(arUnpaid)} tone={overdueAR.length ? "red" : undefined} sub="累積未清，不受篩選影響" />
         <KPI label="月結未付款金額" value={fmt(monthlyUnpaid)} tone={overdueAP.length ? "red" : undefined} sub="累積未清，不受篩選影響" />
       </div>
@@ -889,7 +1000,40 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
           </ResponsiveContainer>
         </ChartCard>
       </div>
+
+      {detail && <KpiDetailModal title={detail.title} rows={detail.rows} onClose={() => setDetail(null)} />}
     </div>
+  );
+}
+
+/* 金額明細下鑽視窗：組成該金額的實際紀錄清單，或彙總金額的子項目拆解 */
+function KpiDetailModal({ title, rows, onClose }) {
+  const total = rows.reduce((a, r) => a + num(r.amount), 0);
+  const hasDateStore = rows.some((r) => r.date || r.store);
+  return (
+    <Modal title={title} onClose={onClose} width={620}>
+      <div className="pl-scroll-x" style={{ maxHeight: 420 }}>
+        <table className="pl-table">
+          <thead><tr>
+            {hasDateStore && <th>日期</th>}
+            {hasDateStore && <th>門店</th>}
+            <th>項目</th><th className="num">金額</th>
+          </tr></thead>
+          <tbody>
+            {rows.length === 0 && <tr><td colSpan={hasDateStore ? 4 : 2}><Empty text="此區間尚無明細" /></td></tr>}
+            {rows.map((r, i) => (
+              <tr key={i}>
+                {hasDateStore && <td style={{ whiteSpace: "nowrap" }}>{r.date || "—"}</td>}
+                {hasDateStore && <td>{r.store || "—"}</td>}
+                <td>{r.item}</td>
+                <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 12, textAlign: "right", fontSize: 15, fontWeight: 700 }}>合計 {fmt(total)}</div>
+    </Modal>
   );
 }
 
@@ -5726,6 +5870,16 @@ function App() {
         if (!stored.fixedIncomeItems) stored.fixedIncomeItems = [];
         if (!stored.incomes) stored.incomes = [];
         if (!stored.incomeCategories) stored.incomeCategories = INCOME_CAT_SEED;
+        /* 營運總覽（Dashboard）重構新增的固定收支類別：若主檔尚未有這些類別（用名稱比對，
+           避免跟使用者已手動建立的同名類別重複），自動補上，不影響既有帳務資料 */
+        const ensureCategory = (list, name, extra = {}) =>
+          list.some((c) => c.name === name) ? list : [...list, { id: uid("cat"), name, active: true, ...extra }];
+        ["租金-119號", "租金-121號", "租金-烘豆場"].forEach((name) => {
+          stored.categories = ensureCategory(stored.categories, name, { fixed: true });
+        });
+        ["官網收入", "勤美設備出借收入"].forEach((name) => {
+          stored.incomeCategories = ensureCategory(stored.incomeCategories, name);
+        });
         /* 公司共用併入中山店；烘豆場為獨立單位（帳務歸屬中山店） */
         const gone = ["st5"];
         stored.stores = stored.stores.filter((s) => !gone.includes(s.id));
