@@ -1654,8 +1654,12 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   }).sort((a, b) => cmpDate(b.date, a.date));
 
   /* 合計排除「已退回」（除非使用者特意篩選只看已退回），跟營運總覽的口徑一致；
-     已退回紀錄本身仍留在表格裡可見，只是不計入合計 */
-  const total = rows.filter((r) => flt.status === "已退回" || r.status !== "已退回").reduce((a, r) => a + num(r.amount), 0);
+     已退回紀錄本身仍留在表格裡可見，只是不計入合計。另外把固定支出（有 fixedItemId，
+     代表是從「主檔管理→固定支出項目」帶入的紀錄）獨立列出，跟固定收入的判斷方式一致 */
+  const countedRows = rows.filter((r) => flt.status === "已退回" || r.status !== "已退回");
+  const total = countedRows.reduce((a, r) => a + num(r.amount), 0);
+  const fixedTotal = countedRows.filter((r) => r.fixedItemId).reduce((a, r) => a + num(r.amount), 0);
+  const generalTotal = total - fixedTotal;
 
   const save = (form) => {
     if (!form.date || !validDate(form.date)) return alert("請填寫正確支出日期（YYYY/MM/DD）");
@@ -1783,7 +1787,9 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
         <select className="pl-input" style={{ width: 110 }} value={flt.status} onChange={fset("status")}>
           <option value="">全部狀態</option>{EXP_STATUS.map((s) => <option key={s}>{s}</option>)}
         </select>
-        <div style={{ marginLeft: "auto", color: T.sub, fontSize: 13 }}>共 {rows.length} 筆・合計 <b style={{ color: T.ink }}>{fmt(total)}</b></div>
+        <div style={{ marginLeft: "auto", color: T.sub, fontSize: 13 }}>
+          共 {rows.length} 筆・一般支出 <b style={{ color: T.ink }}>{fmt(generalTotal)}</b>・固定支出 <b style={{ color: T.brown }}>{fmt(fixedTotal)}</b>・合計 <b style={{ color: T.ink }}>{fmt(total)}</b>
+        </div>
       </div>
 
       {selRows.length > 0 && (
@@ -1868,8 +1874,12 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
     monthOf(r.date) === month && r.storeId === curStore &&
     perm.canSeeRecord(user, r)
   ).sort((a, b) => cmpDate(b.date, a.date));
-  /* 合計排除「已退回」，跟營運總覽的口徑一致；已退回紀錄本身仍留在表格裡可見，只是不計入合計 */
-  const total = rows.filter((r) => r.status !== "已退回").reduce((a, r) => a + num(r.amount), 0);
+  /* 合計排除「已退回」，跟營運總覽的口徑一致；已退回紀錄本身仍留在表格裡可見，只是不計入合計。
+     另外把固定收入（有 fixedItemId，代表是從「主檔管理→固定收入項目」帶入的紀錄）獨立列出 */
+  const countedRows = rows.filter((r) => r.status !== "已退回");
+  const total = countedRows.reduce((a, r) => a + num(r.amount), 0);
+  const fixedTotal = countedRows.filter((r) => r.fixedItemId).reduce((a, r) => a + num(r.amount), 0);
+  const generalTotal = total - fixedTotal;
 
   const save = (form) => {
     if (!form.date || !validDate(form.date)) return alert("請填寫正確收入日期（YYYY/MM/DD）");
@@ -1953,7 +1963,9 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
       <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
         <MonthPicker value={month} onChange={setMonth} />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ color: T.sub, fontSize: 13 }}>共 {rows.length} 筆・合計 <b style={{ color: T.green }}>{fmt(total)}</b></span>
+          <span style={{ color: T.sub, fontSize: 13 }}>
+            共 {rows.length} 筆・一般收入 <b style={{ color: T.ink }}>{fmt(generalTotal)}</b>・固定收入 <b style={{ color: T.brown }}>{fmt(fixedTotal)}</b>・合計 <b style={{ color: T.green }}>{fmt(total)}</b>
+          </span>
           {fixedForStore.length > 0 && (
             <button className="pl-btn" disabled={fixedTodo.length === 0} onClick={() => setFixedModalOpen(true)}
               title={fixedTodo.length === 0 ? "本月固定收入已全部帶入" : ""}>
