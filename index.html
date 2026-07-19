@@ -1660,6 +1660,15 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   const total = countedRows.reduce((a, r) => a + num(r.amount), 0);
   const fixedTotal = countedRows.filter((r) => r.fixedItemId).reduce((a, r) => a + num(r.amount), 0);
   const generalTotal = total - fixedTotal;
+  /* 頁面拆成兩區塊：一般支出／固定支出（固定＝有 fixedItemId，代表是帶入紀錄） */
+  const generalRows = rows.filter((r) => !r.fixedItemId);
+  const fixedRows = rows.filter((r) => r.fixedItemId);
+  const toggleSelAllIn = (list) => setSelected((s) => {
+    const allSelected = list.length > 0 && list.every((r) => s.has(r.id));
+    const n = new Set(s);
+    list.forEach((r) => (allSelected ? n.delete(r.id) : n.add(r.id)));
+    return n;
+  });
 
   const save = (form) => {
     if (!form.date || !validDate(form.date)) return alert("請填寫正確支出日期（YYYY/MM/DD）");
@@ -1703,7 +1712,6 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
 
   const selRows = rows.filter((r) => selected.has(r.id));
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
   const batchRemove = () => {
     const locked = selRows.filter((r) => r.status === "過審" && !perm.isAdmin(user));
     const targets = selRows.filter((r) => !locked.includes(r));
@@ -1800,46 +1808,13 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
         </div>
       )}
 
-      <div className="pl-card pl-scroll-x">
-        <table className="pl-table">
-          <thead><tr>
-            <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
-            <th>日期</th><th>門店／部門</th><th>類別</th><th>品項</th><th>廠商</th>
-            <th className="num">金額</th><th>付款方式</th><th>付款人</th><th>代墊</th><th>發票</th><th>附件</th><th>狀態</th><th></th>
-          </tr></thead>
-          <tbody>
-            {rows.length === 0 && <tr><td colSpan={14}><Empty text="查無符合條件的支出" /></td></tr>}
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
-                <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
-                <td>{nameOf(r.storeId)}</td>
-                <td>{catOf(r.categoryId)}</td>
-                <td>{r.item}</td>
-                <td>{venOf(r.vendorId) || "—"}</td>
-                <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
-                <td>{r.payMethod}</td>
-                <td>{r.payer}</td>
-                <td>{r.isAdvance ? <Badge text={r.isReimbursed ? "已核銷" : "未核銷"} tone={r.isReimbursed ? "green" : "yellow"} /> : "—"}</td>
-                <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
-                <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
-                <td><Badge text={r.status} /></td>
-                <td style={{ whiteSpace: "nowrap" }}>
-                  {perm.canEdit(user, r) &&
-                    <button className="pl-btn small" onClick={() => setEditing({ ...r })}>編輯</button>}
-                  {r.status === "待審核" && perm.canApprove(user, r) && (
-                    <>
-                      {" "}<button className="pl-btn small" style={{ color: T.green }} onClick={() => review(r, true)}>通過</button>
-                      {" "}<button className="pl-btn small danger" onClick={() => review(r, false)}>退回</button>
-                    </>
-                  )}
-                  {" "}<button className="pl-btn small danger" onClick={() => remove(r)}>刪除</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, margin: "4px 0 10px" }}>一般支出（{generalRows.length} 筆・{fmt(generalTotal)}）</div>
+      <ExpenseRowsTable rows={generalRows} selected={selected} toggleSel={toggleSel} toggleSelAllIn={toggleSelAllIn}
+        nameOf={nameOf} catOf={catOf} venOf={venOf} user={user} setEditing={setEditing} review={review} remove={remove} emptyText="本月尚無一般支出" />
+
+      <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, margin: "20px 0 10px" }}>固定支出（{fixedRows.length} 筆・{fmt(fixedTotal)}）</div>
+      <ExpenseRowsTable rows={fixedRows} selected={selected} toggleSel={toggleSel} toggleSelAllIn={toggleSelAllIn}
+        nameOf={nameOf} catOf={catOf} venOf={venOf} user={user} setEditing={setEditing} review={review} remove={remove} emptyText="本月尚無固定支出帶入紀錄" />
 
       </>}
 
@@ -1854,6 +1829,53 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
         <FixedBringInModal items={fixedTodo} month={flt.month} storeName={nameOf(curStore)} catOf={catOf}
           onClose={() => setFixedModalOpen(false)} onCommit={commitFixed} />
       )}
+    </div>
+  );
+}
+
+/* 每日收支・支出表格：一般支出／固定支出共用同一份表格結構，只是餵進去的 rows 不同 */
+function ExpenseRowsTable({ rows, selected, toggleSel, toggleSelAllIn, nameOf, catOf, venOf, user, setEditing, review, remove, emptyText }) {
+  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  return (
+    <div className="pl-card pl-scroll-x" style={{ marginBottom: 14 }}>
+      <table className="pl-table">
+        <thead><tr>
+          <th style={{ width: 30 }}><input type="checkbox" checked={allSelected} onChange={() => toggleSelAllIn(rows)} /></th>
+          <th>日期</th><th>門店／部門</th><th>類別</th><th>品項</th><th>廠商</th>
+          <th className="num">金額</th><th>付款方式</th><th>付款人</th><th>代墊</th><th>發票</th><th>附件</th><th>狀態</th><th></th>
+        </tr></thead>
+        <tbody>
+          {rows.length === 0 && <tr><td colSpan={14}><Empty text={emptyText} /></td></tr>}
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
+              <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
+              <td>{nameOf(r.storeId)}</td>
+              <td>{catOf(r.categoryId)}</td>
+              <td>{r.item}</td>
+              <td>{venOf(r.vendorId) || "—"}</td>
+              <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+              <td>{r.payMethod}</td>
+              <td>{r.payer}</td>
+              <td>{r.isAdvance ? <Badge text={r.isReimbursed ? "已核銷" : "未核銷"} tone={r.isReimbursed ? "green" : "yellow"} /> : "—"}</td>
+              <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
+              <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
+              <td><Badge text={r.status} /></td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                {perm.canEdit(user, r) &&
+                  <button className="pl-btn small" onClick={() => setEditing({ ...r })}>編輯</button>}
+                {r.status === "待審核" && perm.canApprove(user, r) && (
+                  <>
+                    {" "}<button className="pl-btn small" style={{ color: T.green }} onClick={() => review(r, true)}>通過</button>
+                    {" "}<button className="pl-btn small danger" onClick={() => review(r, false)}>退回</button>
+                  </>
+                )}
+                {" "}<button className="pl-btn small danger" onClick={() => remove(r)}>刪除</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1880,6 +1902,9 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
   const total = countedRows.reduce((a, r) => a + num(r.amount), 0);
   const fixedTotal = countedRows.filter((r) => r.fixedItemId).reduce((a, r) => a + num(r.amount), 0);
   const generalTotal = total - fixedTotal;
+  /* 頁面拆成兩區塊：一般收入／固定收入（固定＝有 fixedItemId，代表是帶入紀錄） */
+  const generalRows = rows.filter((r) => !r.fixedItemId);
+  const fixedRows = rows.filter((r) => r.fixedItemId);
 
   const save = (form) => {
     if (!form.date || !validDate(form.date)) return alert("請填寫正確收入日期（YYYY/MM/DD）");
@@ -1921,7 +1946,12 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
 
   const selRows = rows.filter((r) => selected.has(r.id));
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const toggleSelAll = () => setSelected(rows.length && selRows.length === rows.length ? new Set() : new Set(rows.map((r) => r.id)));
+  const toggleSelAllIn = (list) => setSelected((s) => {
+    const allSelected = list.length > 0 && list.every((r) => s.has(r.id));
+    const n = new Set(s);
+    list.forEach((r) => (allSelected ? n.delete(r.id) : n.add(r.id)));
+    return n;
+  });
   const batchRemove = () => {
     const locked = selRows.filter((r) => r.status === "過審" && !perm.isAdmin(user));
     const targets = selRows.filter((r) => !locked.includes(r));
@@ -1987,43 +2017,13 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
         </div>
       )}
 
-      <div className="pl-card pl-scroll-x">
-        <table className="pl-table">
-          <thead><tr>
-            <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
-            <th>日期</th><th>類別</th><th>項目</th>
-            <th className="num">金額</th><th>收款方式</th><th>經手人</th><th>發票</th><th>附件</th><th>狀態</th><th></th>
-          </tr></thead>
-          <tbody>
-            {rows.length === 0 && <tr><td colSpan={11}><Empty text="本月尚無收入紀錄" /></td></tr>}
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
-                <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
-                <td>{catOf(r.categoryId)}</td>
-                <td>{r.item}</td>
-                <td className="num" style={{ fontWeight: 600, color: T.green }}>{fmtN(r.amount)}</td>
-                <td>{r.payMethod}</td>
-                <td>{r.payer}</td>
-                <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
-                <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
-                <td><Badge text={r.status} /></td>
-                <td style={{ whiteSpace: "nowrap" }}>
-                  {perm.canEdit(user, r) &&
-                    <button className="pl-btn small" onClick={() => setEditing({ ...r })}>編輯</button>}
-                  {r.status === "待審核" && perm.canApprove(user, r) && (
-                    <>
-                      {" "}<button className="pl-btn small" style={{ color: T.green }} onClick={() => review(r, true)}>通過</button>
-                      {" "}<button className="pl-btn small danger" onClick={() => review(r, false)}>退回</button>
-                    </>
-                  )}
-                  {" "}<button className="pl-btn small danger" onClick={() => remove(r)}>刪除</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, margin: "4px 0 10px" }}>一般收入（{generalRows.length} 筆・{fmt(generalTotal)}）</div>
+      <IncomeRowsTable rows={generalRows} selected={selected} toggleSel={toggleSel} toggleSelAllIn={toggleSelAllIn}
+        catOf={catOf} user={user} setEditing={setEditing} review={review} remove={remove} emptyText="本月尚無一般收入" />
+
+      <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, margin: "20px 0 10px" }}>固定收入（{fixedRows.length} 筆・{fmt(fixedTotal)}）</div>
+      <IncomeRowsTable rows={fixedRows} selected={selected} toggleSel={toggleSel} toggleSelAllIn={toggleSelAllIn}
+        catOf={catOf} user={user} setEditing={setEditing} review={review} remove={remove} emptyText="本月尚無固定收入帶入紀錄" />
 
       {editing && (
         <Modal title={editing.id ? "收入明細" : "新增收入"} onClose={() => setEditing(null)} width={680}>
@@ -2062,6 +2062,50 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
         <FixedBringInModal items={fixedTodo} month={month} storeName={nameOf(curStore)} catOf={catOf}
           onClose={() => setFixedModalOpen(false)} onCommit={commitFixed} />
       )}
+    </div>
+  );
+}
+
+/* 每日收支・收入表格：一般收入／固定收入共用同一份表格結構，只是餵進去的 rows 不同 */
+function IncomeRowsTable({ rows, selected, toggleSel, toggleSelAllIn, catOf, user, setEditing, review, remove, emptyText }) {
+  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  return (
+    <div className="pl-card pl-scroll-x" style={{ marginBottom: 14 }}>
+      <table className="pl-table">
+        <thead><tr>
+          <th style={{ width: 30 }}><input type="checkbox" checked={allSelected} onChange={() => toggleSelAllIn(rows)} /></th>
+          <th>日期</th><th>類別</th><th>項目</th>
+          <th className="num">金額</th><th>收款方式</th><th>經手人</th><th>發票</th><th>附件</th><th>狀態</th><th></th>
+        </tr></thead>
+        <tbody>
+          {rows.length === 0 && <tr><td colSpan={11}><Empty text={emptyText} /></td></tr>}
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
+              <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
+              <td>{catOf(r.categoryId)}</td>
+              <td>{r.item}</td>
+              <td className="num" style={{ fontWeight: 600, color: T.green }}>{fmtN(r.amount)}</td>
+              <td>{r.payMethod}</td>
+              <td>{r.payer}</td>
+              <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
+              <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
+              <td><Badge text={r.status} /></td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                {perm.canEdit(user, r) &&
+                  <button className="pl-btn small" onClick={() => setEditing({ ...r })}>編輯</button>}
+                {r.status === "待審核" && perm.canApprove(user, r) && (
+                  <>
+                    {" "}<button className="pl-btn small" style={{ color: T.green }} onClick={() => review(r, true)}>通過</button>
+                    {" "}<button className="pl-btn small danger" onClick={() => review(r, false)}>退回</button>
+                  </>
+                )}
+                {" "}<button className="pl-btn small danger" onClick={() => remove(r)}>刪除</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
