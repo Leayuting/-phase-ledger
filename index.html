@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 <style>html,body{margin:0;padding:0;}</style>
@@ -21,6 +22,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
 const { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
         CartesianGrid, Tooltip, Legend, ResponsiveContainer } = Recharts;
 const { createClient } = supabase;
+/* JSZip 由 CDN 載入後即為全域變數 JSZip，跟 import 進來的名稱一致，不用再額外指派 */
 
 /* ────────────────────────────────────────────
    PHASE 門店帳務管理系統
@@ -84,6 +86,8 @@ const INVOICE_STATUS = ["未收到", "已收到", "不需發票"];
 const AR_STATUS = ["未請款", "已請款待收款", "部分收款", "已收款", "呆帳"];
 const SALES_STATUS = ["草稿", "待審核", "已審核", "退回修改"];
 const EXP_STATUS = ["草稿", "待審核", "過審", "已退回"];
+/* 匯出與備份中心：manifest／匯出說明會標記此版本號 */
+const APP_VERSION = "PHASE-Ledger v1.0";
 /* 收支入帳規則：現金付款／收款免審核，直接入帳；其餘一律先進待審核 */
 const autoStatus = (payMethod) => (payMethod === "現金" ? "過審" : "待審核");
 
@@ -3880,6 +3884,1211 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
 }
 
 /* ────────────────────────────────────────────
+   匯出與備份中心
+   （資料匯出／備份管理／還原，三個分頁，僅系統管理者・會計・店長可見）
+──────────────────────────────────────────────*/
+
+/* 各資料類型的中文標籤：匯出工作表名稱／CSV 檔名／備份 zip 內檔名共用同一份 */
+const EXPORT_TYPE_LABELS = {
+  dailySales: "每日營收", expenses: "每日支出", incomes: "門店收入", orders: "廠商叫貨",
+  receivables: "應收帳款", vendors: "廠商主檔", approvalLogs: "審核紀錄", auditLogs: "操作紀錄",
+  attachments: "附件清單",
+};
+/* 完整備份（立即備份／月結封存／還原前備份）固定封存的 8 張資料表，附件另外處理 */
+const BACKUP_TABLE_KEYS = ["dailySales", "expenses", "incomes", "orders", "receivables", "vendors", "approvalLogs", "auditLogs"];
+/* 還原實際會寫回 data 的資料表：僅限交易性資料。廠商主檔、審核紀錄、操作紀錄不因還原而覆蓋
+   （避免還原舊備份時，把既有主檔結構或真實的稽核歷程覆蓋掉） */
+const RESTORE_TABLE_KEYS = ["dailySales", "expenses", "incomes", "orders", "receivables"];
+const RESTORE_TABLE_HAS_STORE = { dailySales: true, expenses: true, incomes: true, orders: true, receivables: false };
+
+const sanitizeFilename = (s) => String(s || "").replace(/[\/\\:*?"<>|]/g, "_");
+
+/* SHA-256 雜湊（十六進位字串），供備份完整性驗證使用 */
+async function sha256Hex(input) {
+  const buf = typeof input === "string" ? new TextEncoder().encode(input) : input;
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/* 統一的下載觸發方式：Blob + createObjectURL + 隱藏 <a> 點擊 + revokeObjectURL */
+function downloadBlobFile(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* 讀回 CSV 文字內容為物件陣列（供還原時解析備份 zip 內的 CSV，與匯出時的 json_to_sheet 對稱） */
+function csvToRows(csvText) {
+  const clean = String(csvText || "").replace(/^﻿/, "");
+  if (!clean.trim()) return [];
+  const wb = XLSX.read(clean, { type: "string" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { defval: "" });
+}
+
+/* key 順序無關的物件序列化，用於還原預覽時判斷「更新」或「不變」，避免因欄位順序不同誤判 */
+function stableStringify(v) {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+}
+
+/* 匯出／備份／下載／還原稽核紀錄：不管成功失敗都要記一筆，寫入失敗不中斷主流程（僅記主控台） */
+async function logExportAudit(user, { actionType, scope, dataTypes, fileName, fileSize, recordCount, hasPii, hasAttachments, result, failReason }) {
+  try {
+    await sb.from("export_audit_log").insert({
+      user_id: user.id, user_name: user.name, user_role: user.role,
+      action_type: actionType, scope: scope || "", data_types: dataTypes || [],
+      file_name: fileName || null, file_size: fileSize ?? null, record_count: recordCount ?? null,
+      has_pii: !!hasPii, has_attachments: !!hasAttachments,
+      device: navigator.userAgent,
+      source_ip: null,
+      result, fail_reason: failReason || null,
+    });
+  } catch (e) {
+    console.error("匯出稽核紀錄寫入失敗", e);
+  }
+}
+
+/* 名稱查找 context：storeId／categoryId／vendorId／userId → 人類可讀名稱 */
+function makeExportCtx(data, profiles) {
+  const nameOf = (id) => (data.stores.find((s) => s.id === id) || {}).name || "";
+  const catOf = (id) => (data.categories.find((c) => c.id === id) || {}).name || "";
+  const incCatOf = (id) => ((data.incomeCategories || []).find((c) => c.id === id) || {}).name || "";
+  const venOf = (id) => (data.vendors.find((v) => v.id === id) || {}).name || "";
+  const userNm = (id) => (profiles.find((u) => u.id === id) || {}).name || (id || "");
+  return { nameOf, catOf, incCatOf, venOf, userNm };
+}
+
+/* ── 匯出列（含原始 id 與關聯 id，同時附上人類可讀名稱，方便日後重新匯入／人工閱讀） ── */
+const rowSales = (r, ctx) => {
+  const c = calcSales(r);
+  return {
+    紀錄ID: r.id, 日期: r.date, 門店ID: r.storeId || "", 門店名稱: ctx.nameOf(r.storeId),
+    每日營業額: num(r.pos), 店家配合: num(r.coop), 信用卡: num(r.card), 台灣Pay: num(r.twpay),
+    "LINE Pay": num(r.linepay), 線上商城: num(r.online), 轉帳: num(r.transfer),
+    非現金合計: c.paySum, 現金推算: c.cash, 差異原因: r.diffReason || "", 日結狀態: r.status,
+    備註: r.note || "", 建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy),
+    建立時間: r.createdAt || "", 審核人ID: r.reviewedBy || "", 審核人姓名: ctx.userNm(r.reviewedBy),
+    審核時間: r.reviewedAt || "",
+  };
+};
+
+const rowExpense = (r, ctx) => ({
+  紀錄ID: r.id, 日期: r.date, 門店ID: r.storeId || "", 門店名稱: ctx.nameOf(r.storeId),
+  類別ID: r.categoryId || "", 類別名稱: ctx.catOf(r.categoryId), 品項: r.item || "",
+  廠商ID: r.vendorId || "", 廠商名稱: ctx.venOf(r.vendorId), 金額: num(r.amount),
+  付款方式: r.payMethod || "", 付款人: r.payer || "",
+  員工代墊: r.isAdvance ? "是" : "否", 已核銷: r.isReimbursed ? "是" : "否", 核銷日期: r.reimburseDate || "",
+  發票號碼: r.invoiceNo || "", 附件檔名: r.attachment ? r.attachment.name : "",
+  審核狀態: r.status, 備註: r.note || "",
+  建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy), 建立時間: r.createdAt || "",
+  審核人ID: r.reviewedBy || "", 審核人姓名: ctx.userNm(r.reviewedBy), 審核時間: r.reviewedAt || "",
+});
+
+const rowIncome = (r, ctx) => ({
+  紀錄ID: r.id, 日期: r.date, 門店ID: r.storeId || "", 門店名稱: ctx.nameOf(r.storeId),
+  類別ID: r.categoryId || "", 類別名稱: ctx.incCatOf(r.categoryId), 項目: r.item || "",
+  金額: num(r.amount), 收款方式: r.payMethod || "", 經手人: r.payer || "",
+  發票號碼: r.invoiceNo || "", 附件檔名: r.attachment ? r.attachment.name : "",
+  審核狀態: r.status, 備註: r.note || "",
+  建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy), 建立時間: r.createdAt || "",
+  審核人ID: r.reviewedBy || "", 審核人姓名: ctx.userNm(r.reviewedBy), 審核時間: r.reviewedAt || "",
+});
+
+const rowOrder = (r, ctx) => ({
+  紀錄ID: r.id, 日期: r.date, 門店ID: r.storeId || "", 門店名稱: ctx.nameOf(r.storeId),
+  廠商ID: r.vendorId || "", 廠商名稱: ctx.venOf(r.vendorId), 品項說明: r.items || "",
+  金額: num(r.amount), 結帳方式: r.billing || "", 預計付款日: r.dueDate || "", 實際付款日: r.paidDate || "",
+  付款狀態: r.payStatus || "", 發票狀態: r.invoiceStatus || "", 發票號碼: r.invoiceNo || "",
+  附件檔名: r.attachment ? r.attachment.name : "", 備註: r.note || "",
+  建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy),
+});
+
+const rowAR = (r, ctx) => ({
+  紀錄ID: r.id, 編號: r.no || "", 日期: r.date, 客戶: r.customer || "", 發票號碼: r.invoiceNo || "",
+  請款金額: num(r.amount), 請款人: r.requester || "", 請款日期: r.requestDate || "", 到期日: r.dueDate || "",
+  已收金額: num(r.received), 未收金額: num(r.amount) - num(r.received), 實際收款日: r.receivedDate || "",
+  收款狀態: r.status, 附件檔名: r.attachment ? r.attachment.name : "", 備註: r.note || "",
+  建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy), 建立時間: r.createdAt || "",
+});
+
+const rowVendor = (v) => ({
+  廠商ID: v.id, 廠商名稱: v.name, 聯絡人: v.contact || "", 電話: v.phone || "",
+  結帳方式: v.billing || "", 月結日: v.monthlyDay || "", 預設付款方式: v.payMethod || "",
+  狀態: v.active ? "啟用中" : "停用", 備註: v.note || "",
+});
+
+const rowApproval = (l, ctx) => ({
+  紀錄ID: l.id, 時間: l.time, 操作人ID: l.userId || "", 操作人姓名: ctx.userNm(l.userId),
+  資料表: l.table || "", 對應紀錄ID: l.recordId || "", 結果: l.result || "", 摘要: l.summary || "",
+});
+
+const rowAudit = (l, ctx) => ({
+  紀錄ID: l.id, 時間: l.time, 操作人ID: l.userId || "", 操作人姓名: ctx.userNm(l.userId),
+  資料表: l.table || "", 對應紀錄ID: l.recordId || "", 摘要: l.summary || "",
+  修改前: l.before ? JSON.stringify(l.before) : "", 修改後: l.after ? JSON.stringify(l.after) : "",
+});
+
+/* ── 還原：把匯出列反解析回原始資料結構（欄位名稱需與上面 rowXxx 對稱） ── */
+const parseSales = (row) => ({
+  id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "",
+  pos: num(row["每日營業額"]), coop: num(row["店家配合"]), card: num(row["信用卡"]),
+  twpay: num(row["台灣Pay"]), linepay: num(row["LINE Pay"]), online: num(row["線上商城"]), transfer: num(row["轉帳"]),
+  note: row["備註"] || "", diffReason: row["差異原因"] || "", status: row["日結狀態"] || "草稿",
+  createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
+  reviewedBy: row["審核人ID"] || null, reviewedAt: row["審核時間"] || "",
+});
+
+const parseExpense = (row) => ({
+  id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "",
+  categoryId: row["類別ID"] || "", item: row["品項"] || "", vendorId: row["廠商ID"] || null,
+  amount: num(row["金額"]), payMethod: row["付款方式"] || "", payer: row["付款人"] || "",
+  isAdvance: row["員工代墊"] === "是", isReimbursed: row["已核銷"] === "是", reimburseDate: row["核銷日期"] || "",
+  invoiceNo: row["發票號碼"] || "", attachment: null, note: row["備註"] || "",
+  createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
+  status: row["審核狀態"] || "草稿", reviewedBy: row["審核人ID"] || null, reviewedAt: row["審核時間"] || "",
+});
+
+const parseIncome = (row) => ({
+  id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "",
+  categoryId: row["類別ID"] || "", item: row["項目"] || "", amount: num(row["金額"]),
+  payMethod: row["收款方式"] || "", payer: row["經手人"] || "", invoiceNo: row["發票號碼"] || "",
+  attachment: null, note: row["備註"] || "",
+  createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
+  status: row["審核狀態"] || "草稿", reviewedBy: row["審核人ID"] || null, reviewedAt: row["審核時間"] || "",
+});
+
+const parseOrder = (row) => ({
+  id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "", vendorId: row["廠商ID"] || null,
+  items: row["品項說明"] || "", amount: num(row["金額"]), billing: row["結帳方式"] || "現結",
+  dueDate: row["預計付款日"] || "", paidDate: row["實際付款日"] || "", payStatus: row["付款狀態"] || "未付款",
+  invoiceStatus: row["發票狀態"] || "未收到", invoiceNo: row["發票號碼"] || "", attachment: null,
+  createdBy: row["建立人ID"] || null, note: row["備註"] || "",
+});
+
+const parseAR = (row) => ({
+  id: row["紀錄ID"], no: row["編號"] || "", date: row["日期"], customer: row["客戶"] || "",
+  invoiceNo: row["發票號碼"] || "", amount: num(row["請款金額"]), requester: row["請款人"] || "",
+  requestDate: row["請款日期"] || "", dueDate: row["到期日"] || "", received: num(row["已收金額"]),
+  receivedDate: row["實際收款日"] || "", status: row["收款狀態"] || "未請款", note: row["備註"] || "",
+  attachment: null, createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
+});
+
+const parseVendor = (row) => ({
+  id: row["廠商ID"], name: row["廠商名稱"] || "", contact: row["聯絡人"] || "", phone: row["電話"] || "",
+  billing: row["結帳方式"] || "現結", monthlyDay: row["月結日"] ? parseInt(row["月結日"], 10) : null,
+  payMethod: row["預設付款方式"] || "現金", active: row["狀態"] === "啟用中", note: row["備註"] || "",
+});
+
+const parseApproval = (row) => ({
+  id: row["紀錄ID"], time: row["時間"], userId: row["操作人ID"] || "",
+  table: row["資料表"] || "", recordId: row["對應紀錄ID"] || "", result: row["結果"] || "", summary: row["摘要"] || "",
+});
+
+const parseAudit = (row) => {
+  let before = null, after = null;
+  try { before = row["修改前"] ? JSON.parse(row["修改前"]) : null; } catch (e) { before = null; }
+  try { after = row["修改後"] ? JSON.parse(row["修改後"]) : null; } catch (e) { after = null; }
+  return { id: row["紀錄ID"], time: row["時間"], userId: row["操作人ID"] || "", table: row["資料表"] || "", recordId: row["對應紀錄ID"] || "", summary: row["摘要"] || "", before, after };
+};
+
+const RESTORE_PARSERS = {
+  dailySales: parseSales, expenses: parseExpense, incomes: parseIncome, orders: parseOrder,
+  receivables: parseAR, vendors: parseVendor, approvalLogs: parseApproval, auditLogs: parseAudit,
+};
+
+/* 從 expenses/incomes/orders/receivables 收集「有實際二進位內容」的附件（僅圖片附件會存 base64，
+   一般檔案附件本來就只存檔名、data 為 null，因此不會出現在這裡） */
+function collectAttachments(data, inScope) {
+  const list = [];
+  const push = (records, dateField, label, hasStore) => {
+    (records || []).forEach((r) => {
+      if (!r.attachment || !r.attachment.data) return;
+      if (!inScope(r[dateField], r.storeId, hasStore)) return;
+      list.push({ record: r, dateField, label, hasStore });
+    });
+  };
+  push(data.expenses, "date", "每日支出", true);
+  push(data.incomes, "date", "門店收入", true);
+  push(data.orders, "date", "廠商叫貨", true);
+  push(data.receivables, "date", "應收帳款", false);
+  return list;
+}
+
+/* 把附件塞進 zip：附件/月份/門店/日期_門店_類型_金額_原檔名，回傳附件清單列與估計位元組數 */
+async function packAttachmentsIntoZip(zip, attachItems, ctx) {
+  const usedPaths = new Set();
+  const listRows = [];
+  let bytes = 0;
+  for (const item of attachItems) {
+    const r = item.record, label = item.label, hasStore = item.hasStore;
+    const monthFolder = (monthOf(r.date) || "未知月份").replace("/", "-");
+    const storeFolder = hasStore ? sanitizeFilename(ctx.nameOf(r.storeId) || "未分類門店") : "應收帳款";
+    const dateSlug = (r.date || "未知日期").replace(/\//g, "-");
+    const storeSlug = hasStore ? sanitizeFilename(ctx.nameOf(r.storeId) || "未分類") : "";
+    const amt = Math.round(num(r.amount)) || 0;
+    const orig = r.attachment.name || "附件";
+    const baseName = sanitizeFilename(`${dateSlug}${storeSlug ? "_" + storeSlug : ""}_${label}_${amt}_${orig}`);
+    const folder = `附件/${monthFolder}/${storeFolder}/`;
+    let finalName = baseName, n = 1;
+    while (usedPaths.has(folder + finalName)) {
+      const dot = baseName.lastIndexOf(".");
+      finalName = dot > 0 ? `${baseName.slice(0, dot)}_${n}${baseName.slice(dot)}` : `${baseName}_${n}`;
+      n++;
+    }
+    usedPaths.add(folder + finalName);
+    const b64 = r.attachment.data.replace(/^data:[^;]+;base64,/, "");
+    zip.file(folder + finalName, b64, { base64: true });
+    bytes += Math.floor((b64.length * 3) / 4);
+    listRows.push({
+      紀錄ID: r.id, 資料類型: label, 門店: hasStore ? ctx.nameOf(r.storeId) : "", 日期: r.date,
+      金額: amt, 檔名: orig, 儲存路徑: folder + finalName,
+    });
+  }
+  return { listRows, bytes };
+}
+
+/* ── 建立一份完整備份（手動即時備份／月結封存／還原前自動備份共用同一套流程） ──
+   流程：insert 建立中 → 在瀏覽器端組 zip → 上傳 Storage → 重新下載驗證 → 依驗證結果更新狀態。
+   任何一步失敗都會 catch 住，把該筆備份標記為「驗證失敗」並記一筆失敗稽核，絕不留在「建立中」。 */
+async function createBackup(data, profiles, user, backupType, opts = {}) {
+  const ctx = makeExportCtx(data, profiles);
+  let insertedId = null;
+  try {
+    const isMonthly = backupType === "monthly_archive";
+    const scopeMonth = isMonthly ? prevMonth(monthOf(todayStr())) : null;
+    const inScope = (dateStr) => (isMonthly ? monthOf(dateStr) === scopeMonth : true);
+    const dateRangeLabel = isMonthly ? monthLabel(scopeMonth) : "全部";
+    const storeScopeLabel = "全部門店";
+
+    const { data: inserted, error: insErr } = await sb.from("backups").insert({
+      backup_type: backupType, created_by: user.id, created_by_name: user.name,
+      date_range: dateRangeLabel, store_scope: storeScopeLabel,
+      backup_status: "建立中", note: opts.note || null,
+    }).select().single();
+    if (insErr) throw insErr;
+    insertedId = inserted.id;
+
+    const rowsByTable = {
+      dailySales: data.dailySales.filter((r) => inScope(r.date)).map((r) => rowSales(r, ctx)),
+      expenses: data.expenses.filter((r) => inScope(r.date)).map((r) => rowExpense(r, ctx)),
+      incomes: (data.incomes || []).filter((r) => inScope(r.date)).map((r) => rowIncome(r, ctx)),
+      orders: data.orders.filter((r) => inScope(r.date)).map((r) => rowOrder(r, ctx)),
+      receivables: data.receivables.filter((r) => inScope(r.date)).map((r) => rowAR(r, ctx)),
+      vendors: data.vendors.map((v) => rowVendor(v)),
+      approvalLogs: (data.approvalLogs || []).filter((l) => inScope((l.time || "").slice(0, 10))).map((l) => rowApproval(l, ctx)),
+      auditLogs: (data.auditLogs || []).filter((l) => inScope((l.time || "").slice(0, 10))).map((l) => rowAudit(l, ctx)),
+    };
+
+    const zip = new JSZip();
+    const fileHashes = {};
+    let manifestFileSize = 0;
+    let totalRecords = 0;
+    const tableRecordCounts = {};
+    for (const key of BACKUP_TABLE_KEYS) {
+      const rows = rowsByTable[key];
+      tableRecordCounts[EXPORT_TYPE_LABELS[key]] = rows.length;
+      totalRecords += rows.length;
+      const csv = "﻿" + XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(rows));
+      zip.file(`${EXPORT_TYPE_LABELS[key]}.csv`, csv);
+      fileHashes[`${EXPORT_TYPE_LABELS[key]}.csv`] = await sha256Hex(csv);
+      manifestFileSize += new Blob([csv]).size;
+    }
+
+    const attachItems = collectAttachments(data, (dateStr) => inScope(dateStr));
+    const packed = await packAttachmentsIntoZip(zip, attachItems, ctx);
+    const attachmentListRows = packed.listRows;
+    manifestFileSize += packed.bytes;
+    const attachCsv = "﻿" + XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(attachmentListRows));
+    zip.file("附件清單.csv", attachCsv);
+    fileHashes["附件清單.csv"] = await sha256Hex(attachCsv);
+    manifestFileSize += new Blob([attachCsv]).size;
+
+    const manifest = {
+      backup_id: insertedId, backup_type: backupType, created_at: new Date().toISOString(),
+      created_by: user.name, system_version: APP_VERSION, date_range: dateRangeLabel,
+      store_scope: storeScopeLabel, total_records: totalRecords, table_record_counts: tableRecordCounts,
+      attachment_count: attachmentListRows.length, total_file_size: manifestFileSize,
+      file_hashes: fileHashes, backup_status: "建立中",
+    };
+    zip.file("manifest.json", JSON.stringify(manifest, null, 2));
+
+    const summaryLines = [
+      "PHASE 帳務備份摘要", "",
+      `備份類型：${backupType === "manual" ? "手動即時備份" : backupType === "monthly_archive" ? "月結封存" : "還原前自動備份"}`,
+      `門店範圍：${storeScopeLabel}`, `資料期間：${dateRangeLabel}`,
+      "", "各表筆數：",
+      ...BACKUP_TABLE_KEYS.map((k) => `　${EXPORT_TYPE_LABELS[k]}：${tableRecordCounts[EXPORT_TYPE_LABELS[k]]} 筆`),
+      `附件數量：${attachmentListRows.length} 筆`,
+      "", `建立人：${user.name}`, `建立時間：${nowStamp()}`, `系統版本：${APP_VERSION}`,
+    ];
+    zip.file("備份摘要.txt", summaryLines.join("\n"));
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    const storagePath = `${insertedId}.zip`;
+    const { error: upErr } = await sb.storage.from("ledger-backups").upload(storagePath, blob, { contentType: "application/zip", upsert: true });
+    if (upErr) throw upErr;
+
+    /* 驗證：重新下載、確認大小、確認可解壓、確認 manifest 可解析、比對各檔案雜湊、比對附件數量 */
+    const verification = {};
+    const { data: dlBlob, error: dlErr } = await sb.storage.from("ledger-backups").download(storagePath);
+    verification["檔案可下載"] = !dlErr && !!dlBlob;
+    verification["檔案大小一致"] = !dlErr && !!dlBlob && dlBlob.size === blob.size;
+    let verifyZip = null;
+    if (!dlErr && dlBlob) {
+      try { verifyZip = await JSZip.loadAsync(dlBlob); verification["ZIP可解壓"] = true; }
+      catch (e) { verification["ZIP可解壓"] = false; }
+    } else {
+      verification["ZIP可解壓"] = false;
+    }
+    let manifestOk = false;
+    if (verifyZip) {
+      const mf = verifyZip.file("manifest.json");
+      if (mf) { try { JSON.parse(await mf.async("string")); manifestOk = true; } catch (e) { manifestOk = false; } }
+    }
+    verification["manifest完整"] = manifestOk;
+    let hashOk = !!verifyZip;
+    if (verifyZip) {
+      for (const [fname, hash] of Object.entries(fileHashes)) {
+        const f = verifyZip.file(fname);
+        if (!f) { hashOk = false; break; }
+        const content = await f.async("string");
+        if ((await sha256Hex(content)) !== hash) { hashOk = false; break; }
+      }
+    }
+    verification["雜湊值正確"] = hashOk;
+    let attachOk = false;
+    if (verifyZip) {
+      const files = Object.keys(verifyZip.files).filter((p) => p.startsWith("附件/") && !verifyZip.files[p].dir);
+      attachOk = files.length === attachmentListRows.length;
+    }
+    verification["附件無缺漏"] = attachOk;
+
+    const allOk = Object.values(verification).every(Boolean);
+
+    const { error: updErr } = await sb.from("backups").update({
+      total_records: totalRecords, table_record_counts: tableRecordCounts,
+      attachment_count: attachmentListRows.length, total_file_size: blob.size,
+      file_hashes: fileHashes, storage_path: storagePath,
+      backup_status: allOk ? "驗證成功" : "驗證失敗",
+      verification_detail: verification, note: opts.note || null,
+    }).eq("id", insertedId);
+    if (updErr) throw updErr;
+
+    await logExportAudit(user, {
+      actionType: "backup", scope: `${backupType}・${dateRangeLabel}・${storeScopeLabel}`,
+      dataTypes: BACKUP_TABLE_KEYS.map((k) => EXPORT_TYPE_LABELS[k]),
+      fileName: storagePath, fileSize: blob.size, recordCount: totalRecords,
+      hasPii: true, hasAttachments: attachmentListRows.length > 0,
+      result: allOk ? "success" : "failed",
+      failReason: allOk ? null : "備份驗證未通過：" + Object.entries(verification).filter(([, v]) => !v).map(([k]) => k).join("、"),
+    });
+
+    return {
+      ok: allOk, backupId: insertedId, storagePath, verification, tableRecordCounts, totalRecords,
+      attachmentCount: attachmentListRows.length, totalFileSize: blob.size, manifest, dateRangeLabel, storeScopeLabel,
+    };
+  } catch (e) {
+    const failReason = String((e && e.message) || e);
+    if (insertedId) {
+      await sb.from("backups").update({ backup_status: "驗證失敗", note: `建立失敗：${failReason}` }).eq("id", insertedId).catch(() => {});
+    }
+    await logExportAudit(user, {
+      actionType: "backup", scope: backupType, dataTypes: [], fileName: null, fileSize: null, recordCount: null,
+      hasPii: false, hasAttachments: false, result: "failed", failReason,
+    });
+    return { ok: false, error: failReason, backupId: insertedId };
+  }
+}
+
+/* ── 還原範圍判斷：batch／full 以備份檔案本身內容為準；month／store 再額外narrow ── */
+function makeScopedPredicate(scopeType, scopeMonth, scopeStoreId, stores) {
+  return (r, hasStoreField) => {
+    if (scopeType === "month") return monthOf(r.date) === scopeMonth;
+    if (scopeType === "store") return hasStoreField && acctStoreId(stores, r.storeId) === scopeStoreId;
+    return true; // batch（單一批次）／full（完整系統還原）
+  };
+}
+
+/* 把「現有 data」與「備份裡篩選範圍內的資料」合併成新的完整 data 物件：
+   範圍內的 id 用備份版本覆蓋／新增，範圍外或範圍內但備份沒有的既有資料完全不動（不刪除）。 */
+function computeMergedData(d, backupTables, scopeType, scopeMonth, scopeStoreId) {
+  const scoped = makeScopedPredicate(scopeType, scopeMonth, scopeStoreId, d.stores);
+  const mergeTable = (key) => {
+    const hasStoreField = RESTORE_TABLE_HAS_STORE[key];
+    const backupRows = (backupTables[key] || []).filter((r) => scoped(r, hasStoreField));
+    const backupById = Object.fromEntries(backupRows.map((r) => [r.id, r]));
+    const current = d[key] || [];
+    const currentIds = new Set(current.map((r) => r.id));
+    const merged = current.map((r) => (backupById[r.id] ? backupById[r.id] : r));
+    const toAdd = backupRows.filter((r) => !currentIds.has(r.id));
+    return [...merged, ...toAdd];
+  };
+  const next = { ...d };
+  RESTORE_TABLE_KEYS.forEach((key) => { next[key] = mergeTable(key); });
+  return next;
+}
+
+/* 還原預覽：依範圍分別列出每種資料類型「新增／更新覆蓋／不變」筆數，不給模糊的總數 */
+function computeRestorePreview(d, backupTables, scopeType, scopeMonth, scopeStoreId) {
+  const scoped = makeScopedPredicate(scopeType, scopeMonth, scopeStoreId, d.stores);
+  const result = {};
+  RESTORE_TABLE_KEYS.forEach((key) => {
+    const hasStoreField = RESTORE_TABLE_HAS_STORE[key];
+    const backupRows = (backupTables[key] || []).filter((r) => scoped(r, hasStoreField));
+    const current = d[key] || [];
+    const curById = Object.fromEntries(current.map((r) => [r.id, r]));
+    let added = 0, updated = 0, unchanged = 0;
+    backupRows.forEach((r) => {
+      if (!(r.id in curById)) added++;
+      else if (stableStringify(curById[r.id]) !== stableStringify(r)) updated++;
+      else unchanged++;
+    });
+    result[key] = { added, updated, unchanged, total: backupRows.length };
+  });
+  return result;
+}
+
+/* 驗證備份完整性：manifest 是否可解析、各檔案是否存在、雜湊是否相符、附件數量是否吻合。
+   任何一項沒過就整體 ok=false，呼叫端必須擋下不准繼續下一步。 */
+async function verifyBackupIntegrity(zip, manifest) {
+  const details = {};
+  if (!manifest) { details["manifest.json 存在且可解析"] = false; return { ok: false, details }; }
+  details["manifest.json 存在且可解析"] = true;
+  const hashes = manifest.file_hashes || {};
+  const missing = [], mismatched = [];
+  for (const [fname, expected] of Object.entries(hashes)) {
+    const f = zip.file(fname);
+    if (!f) { missing.push(fname); continue; }
+    const content = await f.async("string");
+    const h = await sha256Hex(content);
+    if (h !== expected) mismatched.push(fname);
+  }
+  details["各檔案存在"] = missing.length === 0;
+  details["雜湊值相符"] = mismatched.length === 0;
+  const attachFiles = Object.keys(zip.files).filter((p) => p.startsWith("附件/") && !zip.files[p].dir);
+  details["附件數量相符"] = (manifest.attachment_count || 0) === attachFiles.length;
+  const ok = Object.values(details).every(Boolean);
+  return { ok, details, missing, mismatched, attachFilesCount: attachFiles.length };
+}
+
+/* 解析整份備份 zip 回內部資料結構（含把附件二進位重新接回對應紀錄的 attachment 欄位） */
+async function parseBackupZip(zip) {
+  const mf = zip.file("manifest.json");
+  const manifest = mf ? JSON.parse(await mf.async("string")) : null;
+  const attachMap = {};
+  const listFile = zip.file("附件清單.csv");
+  if (listFile) {
+    const rows = csvToRows(await listFile.async("string"));
+    rows.forEach((row) => {
+      const id = row["紀錄ID"];
+      if (id) attachMap[id] = { path: row["儲存路徑"], name: row["檔名"] };
+    });
+  }
+  const tables = {};
+  for (const key of BACKUP_TABLE_KEYS) {
+    const f = zip.file(`${EXPORT_TYPE_LABELS[key]}.csv`);
+    const rows = f ? csvToRows(await f.async("string")) : [];
+    let parsed = rows.map(RESTORE_PARSERS[key]);
+    if (["expenses", "incomes", "orders", "receivables"].includes(key)) {
+      const withAttach = [];
+      for (const r of parsed) {
+        const info = attachMap[r.id];
+        let attachment = null;
+        if (info && info.path) {
+          const f2 = zip.file(info.path);
+          if (f2) {
+            const b64 = await f2.async("base64");
+            attachment = { name: info.name || "附件", type: "image", data: `data:image/jpeg;base64,${b64}` };
+          }
+        }
+        withAttach.push({ ...r, attachment });
+      }
+      parsed = withAttach;
+    }
+    tables[key] = parsed;
+  }
+  return { manifest, tables };
+}
+
+/* ── 分頁一：資料匯出 ── */
+function ExportTab({ data, user, profiles }) {
+  const isAcctFull = perm.isAcct(user); // 系統管理者／會計：不限門店範圍
+  const scope = perm.storeScope(user); // 店長：僅限自己門店範圍（storeScope 已處理烘豆場併入中山店的邏輯）
+  const storeOptions = data.stores.filter((s) => s.active && (isAcctFull || (scope && scope.includes(s.id))));
+  const defaultStoreId = isAcctFull ? "" : ((storeOptions[0] && storeOptions[0].id) || "");
+
+  const [rangeMode, setRangeMode] = useState("range");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [month, setMonth] = useState(monthOf(todayStr()));
+  const [storeId, setStoreId] = useState(defaultStoreId);
+  const [types, setTypes] = useState({
+    dailySales: true, expenses: true, incomes: false, orders: false, receivables: false,
+    vendors: false, approvalLogs: false, auditLogs: false, attachments: false,
+  });
+  const [salesStatusFilter, setSalesStatusFilter] = useState(new Set());
+  const [expIncStatusFilter, setExpIncStatusFilter] = useState(new Set());
+  const [payStatusFilter, setPayStatusFilter] = useState(new Set());
+  const [apOnly, setApOnly] = useState(false);
+  const [advanceOnly, setAdvanceOnly] = useState(false);
+  const [format, setFormat] = useState("xlsx");
+  const [busy, setBusy] = useState(false);
+
+  const ctx = makeExportCtx(data, profiles);
+  const nameOf = ctx.nameOf;
+
+  const toggleType = (k) => setTypes((t) => ({ ...t, [k]: !t[k] }));
+  const toggleSet = (setFn, v) => setFn((s) => { const n = new Set(s); if (n.has(v)) n.delete(v); else n.add(v); return n; });
+
+  const inRange = (dateStr) => {
+    if (!dateStr) return false;
+    if (rangeMode === "month") return monthOf(dateStr) === month;
+    if (dateFrom && cmpDate(dateStr, dateFrom) < 0) return false;
+    if (dateTo && cmpDate(dateStr, dateTo) > 0) return false;
+    return true;
+  };
+  /* 選到子單位（如烘豆場）時直接比對；選到母門店時把子單位資料一併併入 */
+  const storeOk = (sid) => {
+    if (!storeId) return true;
+    if (!sid) return false;
+    if (sid === storeId) return true;
+    return acctStoreId(data.stores, sid) === storeId;
+  };
+
+  const buildRows = (type) => {
+    switch (type) {
+      case "dailySales":
+        return data.dailySales
+          .filter((r) => inRange(r.date) && storeOk(r.storeId) && (salesStatusFilter.size === 0 || salesStatusFilter.has(r.status)))
+          .map((r) => rowSales(r, ctx));
+      case "expenses":
+        return data.expenses
+          .filter((r) => inRange(r.date) && storeOk(r.storeId) && (expIncStatusFilter.size === 0 || expIncStatusFilter.has(r.status)) && (!advanceOnly || r.isAdvance === true))
+          .map((r) => rowExpense(r, ctx));
+      case "incomes":
+        return (data.incomes || [])
+          .filter((r) => inRange(r.date) && storeOk(r.storeId) && (expIncStatusFilter.size === 0 || expIncStatusFilter.has(r.status)))
+          .map((r) => rowIncome(r, ctx));
+      case "orders":
+        return data.orders
+          .filter((r) => inRange(r.date) && storeOk(r.storeId) && (payStatusFilter.size === 0 || payStatusFilter.has(r.payStatus)) && (!apOnly || (r.billing === "月結" && r.payStatus !== "已付款")))
+          .map((r) => rowOrder(r, ctx));
+      case "receivables":
+        return data.receivables.filter((r) => inRange(r.date)).map((r) => rowAR(r, ctx));
+      case "vendors":
+        return data.vendors.map((v) => rowVendor(v));
+      case "approvalLogs":
+        return (data.approvalLogs || []).filter((l) => inRange((l.time || "").slice(0, 10))).map((l) => rowApproval(l, ctx));
+      case "auditLogs":
+        return (data.auditLogs || []).filter((l) => inRange((l.time || "").slice(0, 10))).map((l) => rowAudit(l, ctx));
+      case "attachments":
+        return collectAttachments(data, (dateStr, sid, hasStore) => inRange(dateStr) && (!hasStore || storeOk(sid)))
+          .map((item) => ({
+            紀錄ID: item.record.id, 資料類型: item.label, 門店名稱: item.hasStore ? nameOf(item.record.storeId) : "",
+            日期: item.record.date, 金額: num(item.record.amount), 檔名: item.record.attachment.name, 附件類型: item.record.attachment.type,
+          }));
+      default:
+        return [];
+    }
+  };
+
+  const scopeDesc = (selectedTypes) => {
+    const rangePart = rangeMode === "month" ? monthLabel(month) : `${dateFrom || "不限起日"}～${dateTo || "不限迄日"}`;
+    const storePart = storeId ? nameOf(storeId) : "全部門店";
+    return `${rangePart}・${storePart}・${selectedTypes.map((t) => EXPORT_TYPE_LABELS[t]).join("、")}`;
+  };
+  const filterDesc = () => {
+    const parts = [];
+    if (salesStatusFilter.size) parts.push(`日結狀態：${[...salesStatusFilter].join("、")}`);
+    if (expIncStatusFilter.size) parts.push(`支出／收入狀態：${[...expIncStatusFilter].join("、")}`);
+    if (payStatusFilter.size) parts.push(`叫貨付款狀態：${[...payStatusFilter].join("、")}`);
+    if (apOnly) parts.push("僅應付帳款（月結且未付清）");
+    if (advanceOnly) parts.push("僅員工代墊");
+    return parts.length ? parts.join("；") : "無額外篩選";
+  };
+  const fileDateLabel = () => { const parts = todayStr().split("/"); return `${parts[0]}年${parts[1]}月${parts[2]}日`; };
+
+  const doExport = async () => {
+    const selectedTypes = Object.keys(types).filter((t) => types[t]);
+    if (selectedTypes.length === 0) { alert("請至少勾選一種資料類型"); return; }
+    if (rangeMode === "range") {
+      if (dateFrom && !validDate(dateFrom)) { alert("起始日期格式錯誤，需 YYYY/MM/DD"); return; }
+      if (dateTo && !validDate(dateTo)) { alert("結束日期格式錯誤，需 YYYY/MM/DD"); return; }
+    }
+    if (!isAcctFull && !storeId) { alert("請選擇門店（店長僅能匯出自己所屬門店的資料）"); return; }
+
+    setBusy(true);
+    let fileName = null, fileSize = null, totalRecords = 0;
+    const rowsByType = {};
+    try {
+      selectedTypes.forEach((t) => { rowsByType[t] = buildRows(t); });
+      totalRecords = selectedTypes.reduce((a, t) => a + rowsByType[t].length, 0);
+      const sd = scopeDesc(selectedTypes), fd = filterDesc();
+      const hasPii = selectedTypes.some((t) => ["expenses", "incomes", "orders", "receivables", "vendors"].includes(t));
+      const hasAttachments = selectedTypes.includes("attachments");
+      const baseFileName = `PHASE帳務匯出_${fileDateLabel()}`;
+
+      if (format === "xlsx") {
+        const wb = XLSX.utils.book_new();
+        const infoRows = [
+          ["PHASE 帳務匯出說明"], [],
+          ["匯出時間", nowStamp()], ["匯出人", user.name],
+          ["資料範圍", sd], ["篩選條件", fd], [],
+          ["各表筆數"],
+          ...selectedTypes.map((t) => [EXPORT_TYPE_LABELS[t], rowsByType[t].length]),
+          [], ["系統版本", APP_VERSION],
+        ];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(infoRows), "匯出說明");
+        selectedTypes.forEach((t) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rowsByType[t]), EXPORT_TYPE_LABELS[t].slice(0, 31)));
+        const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+        const blob = new Blob([wbout], { type: "application/octet-stream" });
+        fileName = `${baseFileName}.xlsx`; fileSize = blob.size;
+        downloadBlobFile(blob, fileName);
+      } else if (selectedTypes.length === 1) {
+        const t = selectedTypes[0];
+        const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(rowsByType[t]));
+        const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+        fileName = `${EXPORT_TYPE_LABELS[t]}_${fileDateLabel()}.csv`; fileSize = blob.size;
+        downloadBlobFile(blob, fileName);
+      } else {
+        const zip = new JSZip();
+        selectedTypes.forEach((t) => {
+          const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(rowsByType[t]));
+          zip.file(`${EXPORT_TYPE_LABELS[t]}.csv`, "﻿" + csv);
+        });
+        const infoText = [
+          "PHASE 帳務匯出說明", "", `匯出時間：${nowStamp()}`, `匯出人：${user.name}`,
+          `資料範圍：${sd}`, `篩選條件：${fd}`, "", "各表筆數：",
+          ...selectedTypes.map((t) => `　${EXPORT_TYPE_LABELS[t]}：${rowsByType[t].length} 筆`),
+          "", `系統版本：${APP_VERSION}`,
+        ].join("\n");
+        zip.file("匯出說明.txt", infoText);
+        const blob = await zip.generateAsync({ type: "blob" });
+        fileName = `${baseFileName}.zip`; fileSize = blob.size;
+        downloadBlobFile(blob, fileName);
+      }
+
+      await logExportAudit(user, {
+        actionType: "export", scope: sd, dataTypes: selectedTypes.map((t) => EXPORT_TYPE_LABELS[t]),
+        fileName, fileSize, recordCount: totalRecords, hasPii, hasAttachments, result: "success",
+      });
+    } catch (e) {
+      await logExportAudit(user, {
+        actionType: "export", scope: "—", dataTypes: selectedTypes.map((t) => EXPORT_TYPE_LABELS[t]),
+        fileName, fileSize, recordCount: totalRecords, hasPii: false, hasAttachments: false,
+        result: "failed", failReason: String((e && e.message) || e),
+      });
+      alert("匯出失敗：" + ((e && e.message) || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const typeList = [
+    ["dailySales", "每日營收"], ["expenses", "每日支出"], ["incomes", "門店收入"], ["orders", "廠商叫貨"],
+    ["receivables", "應收帳款"], ["vendors", "廠商主檔"], ["approvalLogs", "審核紀錄"], ["auditLogs", "操作紀錄"],
+    ["attachments", "附件清單"],
+  ];
+
+  return (
+    <div className="pl-card" style={{ padding: 18, display: "grid", gap: 16 }}>
+      <div>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>時間範圍</div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          {[["range", "按區間"], ["month", "按月份"]].map(([k, l]) => (
+            <button key={k} className={"pl-btn small" + (rangeMode === k ? " primary" : "")} onClick={() => setRangeMode(k)}>{l}</button>
+          ))}
+        </div>
+        {rangeMode === "range" ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input className="pl-input" style={{ width: 130 }} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} placeholder="YYYY/MM/DD" />
+            <span style={{ color: T.sub }}>～</span>
+            <input className="pl-input" style={{ width: 130 }} value={dateTo} onChange={(e) => setDateTo(e.target.value)} placeholder="YYYY/MM/DD" />
+            <span style={{ fontSize: 12, color: T.sub }}>留空代表不限起／迄日</span>
+          </div>
+        ) : (
+          <MonthPicker value={month} onChange={setMonth} />
+        )}
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>門店</div>
+        {isAcctFull ? (
+          <select className="pl-input" style={{ width: 160 }} value={storeId} onChange={(e) => setStoreId(e.target.value)}>
+            <option value="">全部門店</option>
+            {data.stores.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        ) : (
+          <select className="pl-input" style={{ width: 160 }} value={storeId} onChange={(e) => setStoreId(e.target.value)}>
+            {storeOptions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        )}
+        {!isAcctFull && <div style={{ fontSize: 12, color: T.sub, marginTop: 4 }}>店長僅能匯出自己所屬門店的資料（含所屬烘豆場等附屬單位），不能選「全部門店」。</div>}
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>資料類型</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8 }}>
+          {typeList.map(([k, l]) => (
+            <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13.5 }}>
+              <input type="checkbox" checked={types[k]} onChange={() => toggleType(k)} /> {l}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {types.dailySales && (
+        <div>
+          <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 4 }}>日結狀態篩選（不勾選代表不篩選）</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {SALES_STATUS.map((s) => (
+              <label key={s} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}>
+                <input type="checkbox" checked={salesStatusFilter.has(s)} onChange={() => toggleSet(setSalesStatusFilter, s)} /> {s}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      {(types.expenses || types.incomes) && (
+        <div>
+          <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 4 }}>支出／收入審核狀態篩選（不勾選代表不篩選）</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {EXP_STATUS.map((s) => (
+              <label key={s} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}>
+                <input type="checkbox" checked={expIncStatusFilter.has(s)} onChange={() => toggleSet(setExpIncStatusFilter, s)} /> {s}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      {types.orders && (
+        <div>
+          <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 4 }}>叫貨付款狀態篩選（不勾選代表不篩選）</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {ORDER_PAY_STATUS.map((s) => (
+              <label key={s} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}>
+                <input type="checkbox" checked={payStatusFilter.has(s)} onChange={() => toggleSet(setPayStatusFilter, s)} /> {s}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+        {types.orders && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13.5 }}>
+            <input type="checkbox" checked={apOnly} onChange={(e) => setApOnly(e.target.checked)} /> 僅應付帳款（月結且未付清）
+          </label>
+        )}
+        {types.expenses && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13.5 }}>
+            <input type="checkbox" checked={advanceOnly} onChange={(e) => setAdvanceOnly(e.target.checked)} /> 僅員工代墊
+          </label>
+        )}
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>匯出格式</div>
+        <div style={{ display: "flex", gap: 14 }}>
+          {[["xlsx", "Excel（.xlsx）"], ["csv", "CSV"]].map(([k, l]) => (
+            <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13.5 }}>
+              <input type="radio" name="exportFormat" checked={format === k} onChange={() => setFormat(k)} /> {l}
+            </label>
+          ))}
+        </div>
+        <div style={{ fontSize: 12, color: T.sub, marginTop: 4 }}>勾選多種資料類型時，CSV 格式會打包成一個 zip 檔一次下載，避免瀏覽器擋下多個下載請求。</div>
+      </div>
+
+      <div>
+        <button className="pl-btn primary" disabled={busy} onClick={doExport}>{busy ? "匯出中…" : "產生並下載"}</button>
+      </div>
+    </div>
+  );
+}
+
+/* ── 分頁二：備份管理 ── */
+function BackupTab({ data, user, profiles, onGotoRestore }) {
+  const [backups, setBackups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+
+  const fetchBackups = useCallback(async () => {
+    const { data: rows, error } = await sb.from("backups").select("*").order("created_at", { ascending: false });
+    if (!error) setBackups(rows || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    fetchBackups();
+    const channel = sb.channel("backups_sync")
+      .on("postgres_changes", { event: "*", schema: "public", table: "backups" }, fetchBackups)
+      .subscribe();
+    return () => sb.removeChannel(channel);
+  }, [fetchBackups]);
+
+  const runCreate = async (backupType) => {
+    setCreating(true);
+    const r = await createBackup(data, profiles, user, backupType);
+    setCreating(false);
+    if (!r.ok) alert("備份建立失敗：" + (r.error || "驗證未通過，請見備份列表狀態與驗證結果欄位"));
+    else alert(backupType === "monthly_archive" ? "月結封存已建立並驗證成功。" : "備份已建立並驗證成功。");
+    fetchBackups();
+  };
+
+  const downloadBackup = async (b) => {
+    try {
+      if (!b.storage_path) throw new Error("此備份沒有可下載的檔案路徑");
+      const { data: blob, error } = await sb.storage.from("ledger-backups").download(b.storage_path);
+      if (error) throw error;
+      downloadBlobFile(blob, b.storage_path);
+      await logExportAudit(user, {
+        actionType: "download", scope: `${b.backup_type}・${b.date_range}・${b.store_scope}`,
+        dataTypes: [], fileName: b.storage_path, fileSize: blob.size, recordCount: b.total_records,
+        hasPii: true, hasAttachments: (b.attachment_count || 0) > 0, result: "success",
+      });
+    } catch (e) {
+      await logExportAudit(user, {
+        actionType: "download", scope: `${b.backup_type}`, dataTypes: [], fileName: b.storage_path || null,
+        fileSize: null, recordCount: null, hasPii: false, hasAttachments: false,
+        result: "failed", failReason: String((e && e.message) || e),
+      });
+      alert("下載失敗：" + ((e && e.message) || e));
+    }
+  };
+
+  const deleteBackup = async (b) => {
+    if (!confirm(`確定刪除備份「${b.date_range}・${b.store_scope}」（建立於 ${b.created_at ? new Date(b.created_at).toLocaleString("zh-TW") : ""}）？此動作無法復原。`)) return;
+    try {
+      if (b.storage_path) await sb.storage.from("ledger-backups").remove([b.storage_path]);
+      const { error } = await sb.from("backups").delete().eq("id", b.id);
+      if (error) throw error;
+      fetchBackups();
+    } catch (e) {
+      alert("刪除失敗：" + ((e && e.message) || e));
+    }
+  };
+
+  const sizeLabel = (n) => (n === null || n === undefined ? "—" : (n / 1024 / 1024).toFixed(2) + " MB");
+  const verifySummary = (b) => {
+    const v = b.verification_detail;
+    if (!v) return "—";
+    const bad = Object.entries(v).filter(([, ok]) => !ok).map(([k]) => k);
+    return bad.length === 0 ? "全部通過" : `未通過：${bad.join("、")}`;
+  };
+  const canDownload = perm.isAcct(user); // 備份內容涵蓋全店範圍，超出店長權限，店長不能下載
+
+  return (
+    <div>
+      <div className="pl-card" style={{ padding: "12px 16px", marginBottom: 14, background: T.brownSoft, fontSize: 12.5, color: T.ink }}>
+        目前備份為手動觸發，尚未啟用每日／每週自動排程與異地雲端同步，需要另外設定伺服器端排程（Supabase Edge Functions）才能做到全自動，這部分待之後評估。
+      </div>
+
+      {perm.isAcct(user) && (
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+          <button className="pl-btn primary" disabled={creating} onClick={() => runCreate("manual")}>{creating ? "備份建立中…" : "立即備份"}</button>
+          <button className="pl-btn" disabled={creating} onClick={() => runCreate("monthly_archive")}>{creating ? "備份建立中…" : "建立月結封存（上個月）"}</button>
+        </div>
+      )}
+
+      <div className="pl-card pl-scroll-x">
+        <table className="pl-table">
+          <thead><tr>
+            <th>日期</th><th>類型</th><th>範圍</th><th className="num">大小</th><th className="num">資料筆數</th>
+            <th className="num">附件數</th><th>狀態</th><th>驗證結果</th><th>建立人</th><th></th>
+          </tr></thead>
+          <tbody>
+            {loading && <tr><td colSpan={10}><Empty text="載入中…" /></td></tr>}
+            {!loading && backups.length === 0 && <tr><td colSpan={10}><Empty text="尚無備份紀錄。" /></td></tr>}
+            {backups.map((b) => (
+              <tr key={b.id}>
+                <td style={{ whiteSpace: "nowrap" }}>{b.created_at ? new Date(b.created_at).toLocaleString("zh-TW") : "—"}</td>
+                <td>{b.backup_type === "manual" ? "手動備份" : b.backup_type === "monthly_archive" ? "月結封存" : "還原前備份"}</td>
+                <td>{b.date_range}・{b.store_scope}</td>
+                <td className="num">{sizeLabel(b.total_file_size)}</td>
+                <td className="num">{b.total_records ?? "—"}</td>
+                <td className="num">{b.attachment_count ?? "—"}</td>
+                <td><Badge text={b.backup_status} tone={b.backup_status === "驗證成功" ? "green" : b.backup_status === "驗證失敗" ? "red" : b.backup_status === "已還原" ? "brown" : "yellow"} /></td>
+                <td style={{ fontSize: 12, maxWidth: 220 }}>{verifySummary(b)}</td>
+                <td>{b.created_by_name}</td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  {canDownload
+                    ? <button className="pl-btn small" disabled={!b.storage_path} onClick={() => downloadBackup(b)}>下載</button>
+                    : <button className="pl-btn small" disabled title="備份內容涵蓋全店範圍，超出店長權限">下載</button>}
+                  {" "}<button className="pl-btn small" onClick={() => onGotoRestore(b)}>還原</button>
+                  {perm.isAdmin(user) && <> <button className="pl-btn small danger" onClick={() => deleteBackup(b)}>刪除</button></>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ── 分頁三：還原（僅系統管理者可見內容） ── */
+function RestoreTab({ data, update, user, profiles, presetBackup }) {
+  const [sourceMode, setSourceMode] = useState("system"); // system | upload
+  const [backups, setBackups] = useState([]);
+  const [selectedBackupId, setSelectedBackupId] = useState(presetBackup ? presetBackup.id : "");
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [scopeType, setScopeType] = useState("batch"); // batch | month | store | full
+  const [scopeMonth, setScopeMonth] = useState(monthOf(todayStr()));
+  const retailStores = data.stores.filter((s) => s.retail && s.active);
+  const [scopeStoreId, setScopeStoreId] = useState((retailStores[0] && retailStores[0].id) || "");
+  const [loadedZip, setLoadedZip] = useState(null);
+  const [manifest, setManifest] = useState(null);
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [parsedTables, setParsedTables] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState(1);
+  const fileRef = useRef();
+
+  useEffect(() => {
+    sb.from("backups").select("*").order("created_at", { ascending: false })
+      .then(({ data: rows, error }) => { if (!error) setBackups(rows || []); });
+  }, []);
+
+  /* 權限檢查放在所有 hooks 呼叫之後，避免角色變動時違反 React hooks 呼叫順序規則
+     （跟 ARModule／MasterModule 等既有頁面的寫法一致） */
+  if (!perm.isAdmin(user)) return <Empty text="還原僅開放系統管理者操作。" />;
+
+  const resetFromStep2 = () => {
+    setLoadedZip(null); setManifest(null); setVerifyResult(null); setParsedTables(null); setPreview(null); setStep(1);
+  };
+
+  const loadZip = async () => {
+    if (sourceMode === "system") {
+      if (!selectedBackupId) { alert("請選擇一份備份"); return null; }
+      const b = backups.find((x) => x.id === selectedBackupId);
+      if (!b || !b.storage_path) { alert("此備份缺少檔案路徑，無法還原"); return null; }
+      const { data: blob, error } = await sb.storage.from("ledger-backups").download(b.storage_path);
+      if (error) { alert("下載備份檔失敗：" + error.message); return null; }
+      return await JSZip.loadAsync(blob);
+    }
+    if (!uploadedFile) { alert("請先選擇要上傳的 ZIP 檔"); return null; }
+    const buf = await uploadedFile.arrayBuffer();
+    return await JSZip.loadAsync(buf);
+  };
+
+  const handleVerify = async () => {
+    setBusy(true);
+    try {
+      const zip = await loadZip();
+      if (!zip) { setBusy(false); return; }
+      const mf = zip.file("manifest.json");
+      const mani = mf ? JSON.parse(await mf.async("string")) : null;
+      const vr = await verifyBackupIntegrity(zip, mani);
+      setLoadedZip(zip); setManifest(mani); setVerifyResult(vr);
+      if (!vr.ok) {
+        alert("備份完整性驗證未通過，請見下方明細，無法繼續下一步。");
+      } else {
+        setStep(2);
+      }
+    } catch (e) {
+      setVerifyResult({ ok: false, details: {}, error: String((e && e.message) || e) });
+      alert("驗證失敗：" + ((e && e.message) || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePreview = async () => {
+    setBusy(true);
+    try {
+      const parsed = await parseBackupZip(loadedZip);
+      setParsedTables(parsed.tables);
+      const prev = computeRestorePreview(data, parsed.tables, scopeType, scopeMonth, scopeStoreId);
+      setPreview(prev);
+      setStep(3);
+    } catch (e) {
+      alert("預覽產生失敗：" + ((e && e.message) || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const scopeDesc = () => {
+    if (scopeType === "month") return `單一月份・${monthLabel(scopeMonth)}`;
+    if (scopeType === "store") return `單一門店・${(data.stores.find((s) => s.id === scopeStoreId) || {}).name || scopeStoreId}`;
+    if (scopeType === "batch") return "單一批次（完整還原所選備份）";
+    return "完整系統還原";
+  };
+
+  const runRestore = async () => {
+    if (!reason.trim()) { alert("請填寫還原原因"); return; }
+    if (!verifyResult || !verifyResult.ok) { alert("請先通過備份完整性驗證"); return; }
+    if (!preview || !parsedTables) { alert("請先產生還原預覽"); return; }
+    const summaryText = RESTORE_TABLE_KEYS.map((k) => `${EXPORT_TYPE_LABELS[k]}：新增 ${preview[k].added}・更新覆蓋 ${preview[k].updated}・不變 ${preview[k].unchanged}`).join("\n");
+    if (!confirm(`即將執行還原（範圍：${scopeDesc()}），以下資料將被變動：\n\n${summaryText}\n\n還原原因：${reason}\n\n此操作會先自動建立一份還原前備份，確定執行？`)) return;
+
+    setBusy(true);
+    try {
+      const preBackup = await createBackup(data, profiles, user, "pre_restore", { note: "還原前自動備份" });
+      if (!preBackup.ok) {
+        alert("還原前自動備份失敗，還原已中止，資料未變動。原因：" + (preBackup.error || "備份驗證未通過"));
+        await logExportAudit(user, {
+          actionType: "restore", scope: `${scopeDesc()}・原因：${reason}`, dataTypes: RESTORE_TABLE_KEYS.map((k) => EXPORT_TYPE_LABELS[k]),
+          fileName: null, fileSize: null, recordCount: null, hasPii: true, hasAttachments: false,
+          result: "failed", failReason: "還原前自動備份失敗：" + (preBackup.error || "驗證未通過"),
+        });
+        setBusy(false);
+        return;
+      }
+
+      /* 唯一一次 update() 呼叫：在回呼內用最新的 d 計算合併結果，符合單一原子性寫入 */
+      update((d) => computeMergedData(d, parsedTables, scopeType, scopeMonth, scopeStoreId));
+
+      if (sourceMode === "system" && selectedBackupId) {
+        await sb.from("backups").update({ backup_status: "已還原", restored_at: new Date().toISOString(), restored_by: user.id }).eq("id", selectedBackupId);
+      }
+
+      const changedCount = RESTORE_TABLE_KEYS.reduce((a, k) => a + preview[k].added + preview[k].updated, 0);
+      const sourceBackup = backups.find((b) => b.id === selectedBackupId);
+      await logExportAudit(user, {
+        actionType: "restore", scope: `${scopeDesc()}・原因：${reason}`, dataTypes: RESTORE_TABLE_KEYS.map((k) => EXPORT_TYPE_LABELS[k]),
+        fileName: sourceMode === "system" ? (sourceBackup && sourceBackup.storage_path) : (uploadedFile ? uploadedFile.name : null),
+        fileSize: null, recordCount: changedCount, hasPii: true, hasAttachments: true, result: "success",
+      });
+      alert("還原完成。");
+      resetFromStep2(); setReason("");
+    } catch (e) {
+      await logExportAudit(user, {
+        actionType: "restore", scope: `${scopeDesc()}・原因：${reason}`, dataTypes: [], fileName: null, fileSize: null,
+        recordCount: null, hasPii: false, hasAttachments: false, result: "failed", failReason: String((e && e.message) || e),
+      });
+      alert("還原失敗：" + ((e && e.message) || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div className="pl-card" style={{ padding: "12px 16px", background: T.redBg, fontSize: 12.5, color: T.red }}>
+        還原會直接覆蓋／新增所選範圍內的正式資料，執行前系統會自動建立一份還原前備份，但仍請謹慎操作。
+      </div>
+
+      <div className="pl-card" style={{ padding: 18, display: "grid", gap: 14 }}>
+        <div style={{ fontWeight: 700 }}>① 選擇還原範圍與來源</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["batch", "單一批次"], ["month", "單一月份"], ["store", "單一門店"], ["full", "完整系統還原"]].map(([k, l]) => (
+            <button key={k} className={"pl-btn small" + (scopeType === k ? " primary" : "")} disabled={step > 1} onClick={() => setScopeType(k)}>{l}</button>
+          ))}
+        </div>
+        {scopeType === "month" && <MonthPicker value={scopeMonth} onChange={setScopeMonth} />}
+        {scopeType === "store" && (
+          <select className="pl-input" style={{ width: 160 }} disabled={step > 1} value={scopeStoreId} onChange={(e) => setScopeStoreId(e.target.value)}>
+            {retailStores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        )}
+
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["system", "從系統內備份還原"], ["upload", "上傳 ZIP 檔還原"]].map(([k, l]) => (
+            <button key={k} className={"pl-btn small" + (sourceMode === k ? " primary" : "")} disabled={step > 1} onClick={() => { setSourceMode(k); resetFromStep2(); }}>{l}</button>
+          ))}
+        </div>
+        {sourceMode === "system" ? (
+          <select className="pl-input" style={{ maxWidth: 420 }} disabled={step > 1} value={selectedBackupId} onChange={(e) => setSelectedBackupId(e.target.value)}>
+            <option value="">請選擇備份</option>
+            {backups.filter((b) => b.backup_status === "驗證成功" || b.backup_status === "已還原").map((b) => (
+              <option key={b.id} value={b.id}>{b.created_at ? new Date(b.created_at).toLocaleString("zh-TW") : b.id}・{b.backup_type}・{b.date_range}</option>
+            ))}
+          </select>
+        ) : (
+          <div>
+            <input ref={fileRef} type="file" accept=".zip" disabled={step > 1} onChange={(e) => setUploadedFile(e.target.files[0] || null)} />
+            {uploadedFile && <span style={{ fontSize: 12.5, color: T.sub, marginLeft: 8 }}>{uploadedFile.name}</span>}
+          </div>
+        )}
+
+        {step === 1 && <div><button className="pl-btn primary" disabled={busy} onClick={handleVerify}>{busy ? "驗證中…" : "驗證備份完整性"}</button></div>}
+        {step > 1 && <div><button className="pl-btn small" onClick={resetFromStep2}>重新選擇範圍／來源</button></div>}
+      </div>
+
+      {verifyResult && (
+        <div className="pl-card" style={{ padding: 18 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>② 完整性驗證結果</div>
+          <div style={{ display: "grid", gap: 4, fontSize: 13.5 }}>
+            {Object.entries(verifyResult.details || {}).map(([k, v]) => (
+              <div key={k} style={{ color: v ? T.green : T.red }}>{v ? "✓" : "✕"} {k}</div>
+            ))}
+            {verifyResult.error && <div style={{ color: T.red }}>錯誤：{verifyResult.error}</div>}
+          </div>
+          {verifyResult.ok && step === 2 && (
+            <div style={{ marginTop: 10 }}>
+              <button className="pl-btn primary" disabled={busy} onClick={handlePreview}>{busy ? "產生預覽中…" : "產生還原預覽"}</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {preview && step >= 3 && (
+        <div className="pl-card" style={{ padding: 18 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>③ 還原預覽（範圍：{scopeDesc()}）</div>
+          <div className="pl-scroll-x">
+            <table className="pl-table">
+              <thead><tr><th>資料類型</th><th className="num">新增</th><th className="num">更新覆蓋</th><th className="num">不變</th><th className="num">備份內筆數</th></tr></thead>
+              <tbody>
+                {RESTORE_TABLE_KEYS.map((k) => (
+                  <tr key={k}>
+                    <td>{EXPORT_TYPE_LABELS[k]}</td>
+                    <td className="num">{preview[k].added}</td>
+                    <td className="num">{preview[k].updated}</td>
+                    <td className="num">{preview[k].unchanged}</td>
+                    <td className="num">{preview[k].total}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {scopeType === "store" && <div style={{ fontSize: 12, color: T.sub, marginTop: 6 }}>應收帳款無門店欄位，選擇「單一門店」範圍時不會還原應收帳款資料。</div>}
+
+          <div style={{ marginTop: 14 }}>
+            <Field label="還原原因" required>
+              <input className="pl-input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="請說明本次還原的原因" />
+            </Field>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <button className="pl-btn danger" disabled={busy || !reason.trim()} onClick={runRestore}>{busy ? "還原執行中…" : "確認執行還原"}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── 匯出備份中心：主元件，掛在 NAV「匯出備份」分頁 ── */
+function ExportBackupModule({ data, update, user, profiles }) {
+  const [tab, setTab] = useState("export");
+  const [restorePreset, setRestorePreset] = useState(null);
+  if (!perm.isAcct(user) && !perm.isMgr(user)) return <Empty text="匯出備份僅開放系統管理者、會計、店長使用。" />;
+
+  const tabs = [["export", "資料匯出"], ["backup", "備份管理"], ["restore", "還原"]];
+  const gotoRestore = (b) => { setRestorePreset(b); setTab("restore"); };
+
+  return (
+    <div>
+      <SectionTitle>匯出備份</SectionTitle>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {tabs.map(([k, l]) => (
+          <button key={k} className="pl-btn small" style={tab === k ? { background: T.brown, color: "#fff", borderColor: T.brown } : {}} onClick={() => setTab(k)}>{l}</button>
+        ))}
+      </div>
+      {tab === "export" && <ExportTab data={data} user={user} profiles={profiles} />}
+      {tab === "backup" && <BackupTab data={data} user={user} profiles={profiles} onGotoRestore={gotoRestore} />}
+      {tab === "restore" && <RestoreTab data={data} update={update} user={user} profiles={profiles} presetBackup={restorePreset} />}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────
    App 主元件
 ──────────────────────────────────────────── */
 const dayShift = (dateStr, n) => {
@@ -3899,6 +5108,7 @@ const NAV = [
   ["import", "資料匯入", "⇪"],
   ["master", "主檔管理", "⚙"],
   ["logs", "修改紀錄", "≡"],
+  ["exportbackup", "匯出備份", "⛃"],
   ["settings", "系統設定", "⋯"],
 ];
 
@@ -4138,6 +5348,7 @@ function App() {
     if (k === "master" || k === "settings") return perm.isAdmin(user);
     if (k === "logs") return perm.isAcct(user);
     if (k === "report") return perm.isAcct(user) || user.role === "店長";
+    if (k === "exportbackup") return perm.isAcct(user) || perm.isMgr(user); // 門店人員完全看不到，其餘角色可見（實際可操作範圍在模組內再依角色細分）
     return true;
   });
 
@@ -4155,6 +5366,7 @@ function App() {
       case "import": return <ImportModule data={data} update={update} user={user} />;
       case "master": return <MasterModule data={data} update={update} user={user} profiles={profiles} />;
       case "logs": return <LogsModule data={data} users={profiles} />;
+      case "exportbackup": return <ExportBackupModule data={data} update={update} user={user} profiles={profiles} />;
       case "settings": return <SettingsModule data={data} update={update} user={user} setData={setData} users={profiles} />;
       default: return null;
     }
