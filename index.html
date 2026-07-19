@@ -1616,7 +1616,9 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
     return true;
   }).sort((a, b) => cmpDate(b.date, a.date));
 
-  const total = rows.reduce((a, r) => a + num(r.amount), 0);
+  /* 合計排除「已退回」（除非使用者特意篩選只看已退回），跟營運總覽的口徑一致；
+     已退回紀錄本身仍留在表格裡可見，只是不計入合計 */
+  const total = rows.filter((r) => flt.status === "已退回" || r.status !== "已退回").reduce((a, r) => a + num(r.amount), 0);
 
   const save = (form) => {
     if (!form.date || !validDate(form.date)) return alert("請填寫正確支出日期（YYYY/MM/DD）");
@@ -1837,7 +1839,8 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
     monthOf(r.date) === month && r.storeId === curStore &&
     perm.canSeeRecord(user, r)
   ).sort((a, b) => cmpDate(b.date, a.date));
-  const total = rows.reduce((a, r) => a + num(r.amount), 0);
+  /* 合計排除「已退回」，跟營運總覽的口徑一致；已退回紀錄本身仍留在表格裡可見，只是不計入合計 */
+  const total = rows.filter((r) => r.status !== "已退回").reduce((a, r) => a + num(r.amount), 0);
 
   const save = (form) => {
     if (!form.date || !validDate(form.date)) return alert("請填寫正確收入日期（YYYY/MM/DD）");
