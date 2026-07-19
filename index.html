@@ -770,7 +770,8 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const monthlyUnpaid = data.orders.filter((o) => o.billing === "月結" && o.payStatus !== "已付款").reduce((a, o) => a + num(o.amount), 0);
   const tgt = data.targets[month] || {};
   const tgtSum = storeFilter ? num(tgt[storeFilter]) : retail.reduce((a, s) => a + num(tgt[s.id]), 0);
-  const achieve = tgtSum > 0 ? (revenue / tgtSum) * 100 : null;
+  /* 營業額達成率＝實收營業額 ÷ 營業額目標（不是只算單純的每日營業額） */
+  const achieve = tgtSum > 0 ? (actualRevenue / tgtSum) * 100 : null;
 
   /* 金額明細下鑽：點擊 KPI 卡片時顯示組成該金額的實際紀錄或子項目 */
   const [detail, setDetail] = useState(null);
