@@ -61,7 +61,7 @@ const ORDER_CAT_ID = "cat_order";
 const CATEGORY_SEED = [
   ["廠商原料叫貨", false], ["租金", true], ["水費", true], ["電費", true],
   ["瓦斯費", true], ["人事成本", true], ["勞保", true], ["健保", true],
-  ["勞退", true], ["稅金", false], ["運費物流", false], ["匯款手續費", false],
+  ["勞退", true], ["稅金", true], ["運費物流", false], ["匯款手續費", false],
   ["行銷廣告", false], ["拍攝設計", false], ["展覽活動", false], ["設備採購", false],
   ["設備維修", false], ["包材", false], ["文具用品", false], ["清潔用品", false],
   ["保險", true], ["員工福利", false], ["差旅住宿", false], ["員工代墊", false],
@@ -5877,6 +5877,11 @@ function App() {
         ["租金-119號", "租金-121號", "租金-烘豆場"].forEach((name) => {
           stored.categories = ensureCategory(stored.categories, name, { fixed: true });
         });
+        /* 營業稅（稅金）也是固定支出項目，補上 fixed 標記，這樣「主檔管理→固定支出／收入項目」
+           跟「類別管理」都會正確標示為固定；金額由使用者之後自行到固定支出項目補上 */
+        stored.categories = stored.categories.map((c) =>
+          (c.name === "稅金" || c.name === "營業稅") ? { ...c, fixed: true } : c
+        );
         /* 用詞修正：先前誤用「勤美設備出借收入」，正確用詞是「勤美設備出租收入」，直接改既有
            類別的名稱（不是刪掉重建），這樣已經記錄在這個類別底下的收入資料會自動跟著改叫「出租」，不會斷連 */
         stored.incomeCategories = (stored.incomeCategories || []).map((c) =>
