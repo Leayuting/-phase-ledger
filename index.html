@@ -200,7 +200,7 @@ const INCOME_CAT_SEED = [
   { id: "ic5", name: "廠商回饋", active: true },
   { id: "ic6", name: "其他收入", active: true },
   { id: "ic7", name: "官網收入", active: true },
-  { id: "ic8", name: "勤美設備出借收入", active: true },
+  { id: "ic8", name: "勤美設備出租收入", active: true },
 ];
 
 function buildSeedData() {
@@ -678,9 +678,9 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const cashSum = salesM.reduce((a, s) => a + calcSales(s).cash, 0);
   const ordSum = ordM.reduce((a, o) => a + num(o.amount), 0);
 
-  /* 收入拆分：官網收入／勤美設備出借收入為獨立類別，其餘收入類別一律歸入「其他收入」 */
+  /* 收入拆分：官網收入／勤美設備出租收入為獨立類別，其餘收入類別一律歸入「其他收入」 */
   const onlineIncCatId = (data.incomeCategories || []).find((c) => c.name === "官網收入")?.id;
-  const equipIncCatId = (data.incomeCategories || []).find((c) => c.name === "勤美設備出借收入")?.id;
+  const equipIncCatId = (data.incomeCategories || []).find((c) => c.name === "勤美設備出租收入")?.id;
   const onlineIncRecs = incM.filter((r) => r.categoryId === onlineIncCatId);
   const equipIncRecs = incM.filter((r) => r.categoryId === equipIncCatId);
   const otherIncRecs = incM.filter((r) => r.categoryId !== onlineIncCatId && r.categoryId !== equipIncCatId);
@@ -688,7 +688,7 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const equipInc = equipIncRecs.reduce((a, r) => a + num(r.amount), 0);
   const otherInc = otherIncRecs.reduce((a, r) => a + num(r.amount), 0);
   const totalInc = revenue + onlineInc + otherInc + equipInc;
-  /* 實收營業額：目前無獨立退款／折讓紀錄，依需求＝總收入（營業額＋官網收入＋其他收入＋設備出借收入） */
+  /* 實收營業額：目前無獨立退款／折讓紀錄，依需求＝總收入（營業額＋官網收入＋其他收入＋設備出租收入） */
   const actualRevenue = totalInc;
 
   /* 支出拆分：租金依地址拆三筆、營業稅、電費、水費、勞保、勞退、健保、人事成本各自獨立列出，
@@ -818,18 +818,18 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
         <KPI label="營業額" value={fmt(revenue)} onClick={() => openDetail("營業額明細", rowsFromSales(salesM))} />
         <KPI label="官網收入" value={fmt(onlineInc)} onClick={() => openDetail("官網收入明細", rowsFromInc(onlineIncRecs))} />
         <KPI label="其他收入" value={fmt(otherInc)} onClick={() => openDetail("其他收入明細", rowsFromInc(otherIncRecs))} />
-        <KPI label="勤美設備出借收入" value={fmt(equipInc)} onClick={() => openDetail("勤美設備出借收入明細", rowsFromInc(equipIncRecs))} />
+        <KPI label="勤美設備出租收入" value={fmt(equipInc)} onClick={() => openDetail("勤美設備出租收入明細", rowsFromInc(equipIncRecs))} />
         <KPI label="總收入" value={fmt(totalInc)} tone="green" onClick={() => openDetail("總收入組成", [
           { item: "營業額", amount: revenue }, { item: "官網收入", amount: onlineInc },
-          { item: "其他收入", amount: otherInc }, { item: "勤美設備出借收入", amount: equipInc },
+          { item: "其他收入", amount: otherInc }, { item: "勤美設備出租收入", amount: equipInc },
         ])} />
         <KPI label="營業額達成率" value={achieve !== null ? `${achieve.toFixed(1)}%` : "尚未設定目標"}
           tone={achieve !== null ? (achieve >= 100 ? "green" : undefined) : undefined}
           sub={tgtSum > 0 ? `目標 ${fmt(tgtSum)}` : undefined} />
-        <KPI label="實收營業額" value={fmt(actualRevenue)} tone="green" sub="＝營業額＋官網收入＋其他收入＋設備出借收入"
+        <KPI label="實收營業額" value={fmt(actualRevenue)} tone="green" sub="＝營業額＋官網收入＋其他收入＋設備出租收入"
           onClick={() => openDetail("實收營業額組成", [
             { item: "營業額", amount: revenue }, { item: "官網收入", amount: onlineInc },
-            { item: "其他收入", amount: otherInc }, { item: "勤美設備出借收入", amount: equipInc },
+            { item: "其他收入", amount: otherInc }, { item: "勤美設備出租收入", amount: equipInc },
           ])} />
       </div>
 
@@ -5877,7 +5877,12 @@ function App() {
         ["租金-119號", "租金-121號", "租金-烘豆場"].forEach((name) => {
           stored.categories = ensureCategory(stored.categories, name, { fixed: true });
         });
-        ["官網收入", "勤美設備出借收入"].forEach((name) => {
+        /* 用詞修正：先前誤用「勤美設備出借收入」，正確用詞是「勤美設備出租收入」，直接改既有
+           類別的名稱（不是刪掉重建），這樣已經記錄在這個類別底下的收入資料會自動跟著改叫「出租」，不會斷連 */
+        stored.incomeCategories = (stored.incomeCategories || []).map((c) =>
+          c.name === "勤美設備出借收入" ? { ...c, name: "勤美設備出租收入" } : c
+        );
+        ["官網收入", "勤美設備出租收入"].forEach((name) => {
           stored.incomeCategories = ensureCategory(stored.incomeCategories, name);
         });
         /* 公司共用併入中山店；烘豆場為獨立單位（帳務歸屬中山店） */
