@@ -86,6 +86,15 @@ const INVOICE_STATUS = ["未收到", "已收到", "不需發票"];
 const AR_STATUS = ["未請款", "已請款待收款", "部分收款", "已收款", "呆帳"];
 const SALES_STATUS = ["草稿", "待審核", "已審核", "退回修改"];
 const EXP_STATUS = ["草稿", "待審核", "過審", "已退回"];
+/* 單據／憑證管理：不強制任何單一類型（如發票）為必填，只強制「要嘛選一種類型、要嘛選無憑證＋填原因」 */
+const DOC_TYPES = ["發票", "收據", "電子發票", "免用統一發票收據", "請款單", "估價單", "匯款證明", "交易明細", "電子憑證", "其他佐證文件"];
+const NO_DOC = "無憑證";
+/* 驗證憑證欄位：回傳錯誤訊息字串，沒問題回傳 null */
+const validateDoc = (form) => {
+  if (!form.docType) return "請選擇單據／憑證類型（若無憑證，請選擇「無憑證」並填寫原因）";
+  if (form.docType === NO_DOC && !(form.noDocReason || "").trim()) return "已選擇「無憑證」，請填寫原因（如：廠商未提供、臨時採購、零星支出）";
+  return null;
+};
 /* 匯出與備份中心：manifest／匯出說明會標記此版本號 */
 const APP_VERSION = "PHASE-Ledger v1.0";
 /* 收支入帳規則：現金付款／收款免審核，直接入帳；其餘一律先進待審核 */
@@ -529,6 +538,64 @@ function AttachmentView({ value }) {
         </Modal>
       )}
     </>
+  );
+}
+
+/* 單筆表單用：憑證類型下拉＋（依類型顯示）附件上傳或無憑證原因。
+   不強制一定要上傳檔案本身（可之後補件），只強制「有選類型」跟「選無憑證要填原因」。 */
+function DocumentField({ docType, noDocReason, attachment, onChange, disabled, label }) {
+  return (
+    <>
+      <Field label={label || "單據／憑證類型"} required>
+        <select className="pl-input" value={docType || ""} onChange={(e) => onChange({ docType: e.target.value })} disabled={disabled}>
+          <option value="">請選擇</option>
+          {DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          <option value={NO_DOC}>{NO_DOC}</option>
+        </select>
+      </Field>
+      {docType === NO_DOC ? (
+        <Field label="無憑證原因" required span={2}>
+          <input className="pl-input" value={noDocReason || ""} onChange={(e) => onChange({ noDocReason: e.target.value })}
+            placeholder="例：廠商未提供、臨時採購、零星支出" disabled={disabled} />
+        </Field>
+      ) : (
+        <Field label="上傳憑證檔案（可之後補傳）" span={2}>
+          <AttachmentInput value={attachment} onChange={(a) => onChange({ attachment: a })} />
+        </Field>
+      )}
+    </>
+  );
+}
+
+/* 批次/快速新增表格列用：精簡版，只有下拉＋（無憑證時）原因輸入，不含附件上傳
+   （批次流程本來就不支援逐列上傳檔案；有需要補傳附件可事後用「編輯」進單筆表單處理）。 */
+function DocTypeCell({ docType, noDocReason, onChange }) {
+  return (
+    <td style={{ minWidth: docType === NO_DOC ? 160 : 110 }}>
+      <select className="pl-input" value={docType || ""} onChange={(e) => onChange({ docType: e.target.value, noDocReason: e.target.value === NO_DOC ? noDocReason : "" })}>
+        <option value="">憑證類型</option>
+        {DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        <option value={NO_DOC}>{NO_DOC}</option>
+      </select>
+      {docType === NO_DOC && (
+        <input className="pl-input" style={{ marginTop: 4 }} value={noDocReason || ""}
+          onChange={(e) => onChange({ noDocReason: e.target.value })} placeholder="無憑證原因" />
+      )}
+    </td>
+  );
+}
+
+/* 列表用：唯讀顯示憑證類型（「無憑證」用紅字＋原因提示），有附件檔案時附上附件檢視按鈕 */
+function DocCell({ docType, noDocReason, attachment }) {
+  if (!docType) return <AttachmentView value={attachment} />;
+  if (docType === NO_DOC) {
+    return <span style={{ color: T.red, fontSize: 12.5 }} title={noDocReason || ""}>無憑證{noDocReason ? `（${noDocReason}）` : ""}</span>;
+  }
+  return (
+    <span style={{ fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 4 }}>
+      {docType}
+      {attachment && attachment.data && <AttachmentView value={attachment} />}
+    </span>
   );
 }
 
@@ -1146,20 +1213,21 @@ function MiniStat({ label, value, tone }) {
 const EXP_EMPTY = {
   date: "", storeId: "", categoryId: "", item: "", vendorId: "", amount: "",
   payMethod: "現金", payer: "", isAdvance: false, isReimbursed: false, reimburseDate: "",
-  invoiceNo: "", attachment: null, note: "",
+  invoiceNo: "", attachment: null, docType: "", noDocReason: "", note: "",
 };
 
 /* ────────────────────────────────────────────
    批次明細輸入：一次進入、連續多筆、一次儲存
 ──────────────────────────────────────────────*/
 function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) {
-  const blank = () => ({ key: uid("row"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金", payer: user.name, invoiceNo: "", note: "" });
+  const blank = () => ({ key: uid("row"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金", payer: user.name, invoiceNo: "", docType: "", noDocReason: "", note: "" });
   const [date, setDate] = useState(todayStr());
   const [rows, setRows] = useState([blank(), blank(), blank()]);
   const cats = data.categories.filter((c) => c.active && c.id !== ORDER_CAT_ID);
   const vens = data.vendors.filter((v) => v.active !== false);
 
   const setRow = (key, k, v) => setRows(rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const patchRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const addRow = () => setRows([...rows, blank()]);
   const delRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
   const filled = rows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
@@ -1175,6 +1243,8 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
       if (r.categoryName.trim() === "廠商原料叫貨") { alert(`第 ${n} 列：「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。`); return null; }
       if (!r.item.trim()) { alert(`第 ${n} 列：請填寫支出品項`); return null; }
       if (num(r.amount) <= 0) { alert(`第 ${n} 列：金額需大於 0`); return null; }
+      const docErr = validateDoc(r);
+      if (docErr) { alert(`第 ${n} 列：${docErr}`); return null; }
     }
     return filled;
   };
@@ -1194,7 +1264,8 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
     const recs = valid.map((r) => ({
       ...EXP_EMPTY, id: uid("ex"), date, storeId: curStore,
       categoryId: resolveCat(r.categoryName), item: r.item.trim(), vendorId: r.vendorId, amount: num(r.amount),
-      payMethod: r.payMethod, payer: r.payer || user.name, invoiceNo: r.invoiceNo.trim(), note: r.note.trim(),
+      payMethod: r.payMethod, payer: r.payer || user.name, invoiceNo: r.invoiceNo.trim(),
+      docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "", note: r.note.trim(),
       /* 現金付款免審核直接入帳，其餘一律待審核，不再讓使用者自己選草稿／送審 */
       status: autoStatus(r.payMethod), createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
     }));
@@ -1218,7 +1289,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
         <table className="pl-table">
           <thead><tr>
             <th style={{ width: 30 }}>#</th><th>類別 *</th><th>品項 *</th><th>廠商</th>
-            <th className="num">金額 *</th><th>付款方式</th><th>付款人</th><th>發票號碼</th><th>備註</th><th></th>
+            <th className="num">金額 *</th><th>付款方式</th><th>付款人</th><th>發票號碼</th><th>單據／憑證 *</th><th>備註</th><th></th>
           </tr></thead>
           <tbody>
             {rows.map((r, i) => (
@@ -1242,6 +1313,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
                 </td>
                 <td style={{ minWidth: 80 }}><input className="pl-input" value={r.payer} onChange={(e) => setRow(r.key, "payer", e.target.value)} /></td>
                 <td style={{ minWidth: 100 }}><input className="pl-input" value={r.invoiceNo} onChange={(e) => setRow(r.key, "invoiceNo", e.target.value)} /></td>
+                <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchRow(r.key, patch)} />
                 <td style={{ minWidth: 100 }}><input className="pl-input" value={r.note} onChange={(e) => setRow(r.key, "note", e.target.value)} /></td>
                 <td><button className="pl-btn small danger" onClick={() => delRow(r.key)}>✕</button></td>
               </tr>
@@ -1265,12 +1337,13 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
 }
 
 function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit }) {
-  const blank = () => ({ key: uid("row"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", note: "" });
+  const blank = () => ({ key: uid("row"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", docType: "", noDocReason: "", note: "" });
   const [date, setDate] = useState(todayStr());
   const [rows, setRows] = useState([blank(), blank(), blank()]);
   const vens = data.vendors.filter((v) => v.active !== false);
 
   const setRow = (key, k, v) => setRows(rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const patchRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const addRow = () => setRows([...rows, blank()]);
   const delRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
   const filled = rows.filter((r) => r.vendorId || r.items.trim() || num(r.amount) > 0);
@@ -1284,13 +1357,20 @@ function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit }) {
       if (!r.vendorId) return alert(`第 ${n} 列：請選擇廠商`);
       if (num(r.amount) <= 0) return alert(`第 ${n} 列：金額需大於 0`);
       if (r.billing === "月結" && !validDate(r.dueDate)) return alert(`第 ${n} 列：月結請填寫預計付款日（YYYY/MM/DD）`);
+      /* 月結叫貨的憑證由「月結對帳」頁的統一發票統一登錄，這裡不強制；現結叫貨才要求單據／憑證 */
+      if (r.billing === "現結") {
+        const docErr = validateDoc(r);
+        if (docErr) return alert(`第 ${n} 列：${docErr}`);
+      }
     }
     const recs = filled.map((r) => ({
       id: uid("po"), date, storeId: curStore, vendorId: r.vendorId, items: r.items.trim(),
       amount: num(r.amount), billing: r.billing,
       dueDate: r.billing === "月結" ? r.dueDate : "", paidDate: r.billing === "現結" ? date : "",
       payStatus: r.billing === "現結" ? "已付款" : "未付款", invoiceStatus: "未收到",
-      invoiceNo: "", attachment: null, note: r.note.trim(), createdBy: user.id,
+      invoiceNo: "", attachment: null,
+      docType: r.billing === "現結" ? r.docType : "", noDocReason: r.billing === "現結" && r.docType === NO_DOC ? r.noDocReason.trim() : "",
+      note: r.note.trim(), createdBy: user.id,
     }));
     onCommit(recs);
   };
@@ -1311,7 +1391,7 @@ function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit }) {
         <table className="pl-table">
           <thead><tr>
             <th style={{ width: 30 }}>#</th><th>廠商 *</th><th>品項說明</th>
-            <th className="num">金額 *</th><th>結帳</th><th>預計付款日</th><th>備註</th><th></th>
+            <th className="num">金額 *</th><th>結帳</th><th>預計付款日</th><th>單據／憑證（現結才需要）</th><th>備註</th><th></th>
           </tr></thead>
           <tbody>
             {rows.map((r, i) => (
@@ -1334,6 +1414,9 @@ function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit }) {
                     ? <input className="pl-input" value={r.dueDate} onChange={(e) => setRow(r.key, "dueDate", e.target.value)} placeholder="YYYY/MM/DD" />
                     : <span style={{ color: T.sub, fontSize: 12.5 }}>現結・當日付清</span>}
                 </td>
+                {r.billing === "現結"
+                  ? <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchRow(r.key, patch)} />
+                  : <td style={{ fontSize: 12, color: T.sub }}>月結憑證於「月結對帳」登錄統一發票</td>}
                 <td style={{ minWidth: 100 }}><input className="pl-input" value={r.note} onChange={(e) => setRow(r.key, "note", e.target.value)} /></td>
                 <td><button className="pl-btn small danger" onClick={() => delRow(r.key)}>✕</button></td>
               </tr>
@@ -1398,6 +1481,8 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
     if (form.categoryId === ORDER_CAT_ID) return alert("「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。");
     if (!form.item.trim()) return alert("請填寫支出品項");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
+    const docErr = validateDoc(form);
+    if (docErr) return alert(docErr);
     const old = form.id ? data.expenses.find((r) => r.id === form.id) : null;
     /* 過審的紀錄由管理者修改時維持過審；其餘一律依付款方式自動判斷（現金免審核直接入帳，否則待審核） */
     const status = old && old.status === "過審" ? old.status : autoStatus(form.payMethod);
@@ -1554,7 +1639,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
                 <td>{r.payer}</td>
                 <td>{r.isAdvance ? <Badge text={r.isReimbursed ? "已核銷" : "未核銷"} tone={r.isReimbursed ? "green" : "yellow"} /> : "—"}</td>
                 <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
-                <td><AttachmentView value={r.attachment} /></td>
+                <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
                 <td><Badge text={r.status} /></td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   {perm.canEdit(user, r) &&
@@ -1587,7 +1672,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
 
 const INC_EMPTY = {
   date: "", storeId: "", categoryId: "", item: "", amount: "",
-  payMethod: "現金", payer: "", invoiceNo: "", attachment: null, note: "",
+  payMethod: "現金", payer: "", invoiceNo: "", attachment: null, docType: "", noDocReason: "", note: "",
 };
 
 function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logApproval }) {
@@ -1608,6 +1693,8 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
     if (!form.categoryId) return alert("請選擇收入類別");
     if (!form.item.trim()) return alert("請填寫收入項目");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
+    const docErr = validateDoc(form);
+    if (docErr) return alert(docErr);
     const old = form.id ? data.incomes.find((r) => r.id === form.id) : null;
     /* 過審的紀錄由管理者修改時維持過審；其餘一律依收款方式自動判斷（現金免審核直接入帳，否則待審核） */
     const status = old && old.status === "過審" ? old.status : autoStatus(form.payMethod);
@@ -1693,7 +1780,7 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
                 <td>{r.payMethod}</td>
                 <td>{r.payer}</td>
                 <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
-                <td><AttachmentView value={r.attachment} /></td>
+                <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
                 <td><Badge text={r.status} /></td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   {perm.canEdit(user, r) &&
@@ -1731,7 +1818,8 @@ function IncomeSection({ data, update, user, curStore, nameOf, logAudit, logAppr
             </Field>
             <Field label="經手人"><input className="pl-input" value={editing.payer} onChange={(e) => setEditing({ ...editing, payer: e.target.value })} /></Field>
             <Field label="發票號碼"><input className="pl-input" value={editing.invoiceNo} onChange={(e) => setEditing({ ...editing, invoiceNo: e.target.value })} /></Field>
-            <Field label="單據附件" span={2}><AttachmentInput value={editing.attachment} onChange={(v) => setEditing({ ...editing, attachment: v })} /></Field>
+            <DocumentField docType={editing.docType} noDocReason={editing.noDocReason} attachment={editing.attachment}
+              onChange={(patch) => setEditing({ ...editing, ...patch })} />
             <Field label="備註" span={3}><input className="pl-input" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></Field>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
@@ -1805,7 +1893,8 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
             {form.isReimbursed && <Field label="核銷日期"><input className="pl-input" value={form.reimburseDate} onChange={set("reimburseDate")} placeholder="YYYY/MM/DD" disabled={locked} /></Field>}
           </>
         )}
-        <Field label="發票或收據附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
+        <DocumentField docType={form.docType} noDocReason={form.noDocReason} attachment={form.attachment}
+          onChange={(patch) => setForm({ ...form, ...patch })} disabled={locked} />
         <Field label="備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} disabled={locked} /></Field>
       </div>
       {!locked && (
@@ -1827,7 +1916,7 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
 const ORD_EMPTY = {
   date: "", storeId: "", vendorId: "", items: "", amount: "", billing: "現結",
   dueDate: "", paidDate: "", payStatus: "未付款", invoiceStatus: "未收到",
-  invoiceNo: "", attachment: null, note: "",
+  invoiceNo: "", attachment: null, docType: "", noDocReason: "", note: "",
 };
 
 function OrderModule({ data, update, user, users, logAudit }) {
@@ -1867,7 +1956,12 @@ function OrderModule({ data, update, user, users, logAudit }) {
     if (num(form.amount) <= 0) return alert("金額需大於 0");
     if (form.billing === "月結" && !form.dueDate) return alert("月結叫貨請填寫預計付款日");
     if (form.dueDate && !validDate(form.dueDate)) return alert("預計付款日格式錯誤（需 YYYY/MM/DD）");
+    if (form.billing !== "月結") {
+      const docErr = validateDoc(form);
+      if (docErr) return alert(docErr);
+    }
     const rec = { ...form, amount: num(form.amount) };
+    if (rec.billing === "月結") { rec.docType = ""; rec.noDocReason = ""; }
     if (!rec.id) {
       rec.id = uid("po"); rec.createdBy = user.id;
       update((d) => ({ ...d, orders: [...d.orders, rec] }));
@@ -2006,7 +2100,9 @@ function OrderModule({ data, update, user, users, logAudit }) {
                   </td>
                   <td><Badge text={r.payStatus} /></td>
                   <td><Badge text={r.invoiceStatus} /></td>
-                  <td><AttachmentView value={r.attachment} /></td>
+                  <td>{r.billing === "月結"
+                    ? <span style={{ fontSize: 12.5, color: T.sub }}>月結憑證見對帳</span>
+                    : <DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} />}</td>
                   <td style={{ whiteSpace: "nowrap" }}>
                     <button className="pl-btn small" onClick={() => setEditing({ ...r })}>編輯</button>
                     {" "}<button className="pl-btn small danger" onClick={() => remove(r)}>刪除</button>
@@ -2262,7 +2358,14 @@ function OrderForm({ form, setForm, data, stores, onSave, onClose }) {
           </select>
         </Field>
         <Field label="發票號碼"><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
-        <Field label="附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
+        {form.billing === "月結" ? (
+          <Field label="單據／憑證" span={2}>
+            <span style={{ fontSize: 13, color: T.sub }}>月結叫貨的憑證於「月結對帳」登錄廠商統一發票，這裡不用個別上傳</span>
+          </Field>
+        ) : (
+          <DocumentField docType={form.docType} noDocReason={form.noDocReason} attachment={form.attachment}
+            onChange={(patch) => setForm({ ...form, ...patch })} />
+        )}
         <Field label="備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} /></Field>
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
@@ -2279,6 +2382,7 @@ function OrderForm({ form, setForm, data, stores, onSave, onClose }) {
 const AR_EMPTY = {
   date: "", customer: "", invoiceNo: "", amount: "", requester: "", requestDate: "",
   dueDate: "", received: "", receivedDate: "", status: "未請款", note: "", attachment: null,
+  docType: "", noDocReason: "",
 };
 
 function ARModule({ data, update, user, logAudit }) {
@@ -2304,6 +2408,8 @@ function ARModule({ data, update, user, logAudit }) {
     if (!form.customer.trim()) return alert("請填寫客戶或公司名稱");
     if (num(form.amount) <= 0) return alert("請款金額需大於 0");
     if (num(form.received) > num(form.amount)) return alert("已收金額不可大於請款金額");
+    const docErr = validateDoc(form);
+    if (docErr) return alert(docErr);
     const rec = { ...form, amount: num(form.amount), received: num(form.received) };
     if (!rec.id) {
       rec.id = uid("ar"); rec.no = nextNo(rec.date); rec.createdBy = user.id; rec.createdAt = nowStamp();
@@ -2384,7 +2490,7 @@ function ARModule({ data, update, user, logAudit }) {
                     {r.dueDate || "—"}{isOverdue && <Badge text="逾期" tone="red" />}
                   </td>
                   <td><Badge text={r.status} /></td>
-                  <td><AttachmentView value={r.attachment} /></td>
+                  <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
                   <td style={{ whiteSpace: "nowrap" }}>
                     <button className="pl-btn small" onClick={() => setEditing({ ...r })}>編輯</button>
                     {" "}<button className="pl-btn small danger" onClick={() => remove(r)}>刪除</button>
@@ -2424,7 +2530,8 @@ function ARForm({ form, setForm, onSave, onClose }) {
         <Field label="未收金額（自動計算）">
           <input className="pl-input" value={isNaN(unpaid) ? "" : fmtN(unpaid)} disabled />
         </Field>
-        <Field label="對帳單附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
+        <DocumentField docType={form.docType} noDocReason={form.noDocReason} attachment={form.attachment}
+          onChange={(patch) => setForm({ ...form, ...patch })} label="對帳單／憑證類型" />
         <Field label="收款備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} /></Field>
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
@@ -3534,6 +3641,7 @@ function ImportModule({ data, update, user }) {
           item, amount, payMethod: PAY_METHODS.includes(pm) ? pm : "其他",
           payer: String(pickCol(raw, "payer") || "").trim() || user.name,
           invoiceNo: String(pickCol(raw, "invoiceNo") || "").trim(), note: String(pickCol(raw, "note") || ""), status: "草稿",
+          docType: NO_DOC, noDocReason: "Excel 匯入舊資料，原始憑證未逐筆登錄（如有需要請補件）",
         };
       }
 
@@ -3551,6 +3659,7 @@ function ImportModule({ data, update, user }) {
           payMethod: PAY_METHODS.includes(pm) ? pm : "現金",
           payer: String(pickCol(raw, "payer") || "").trim() || user.name,
           invoiceNo: String(pickCol(raw, "invoiceNo") || "").trim(), note: String(pickCol(raw, "note") || ""), status: "草稿",
+          docType: NO_DOC, noDocReason: "Excel 匯入舊資料，原始憑證未逐筆登錄（如有需要請補件）",
         };
       }
 
@@ -3573,7 +3682,10 @@ function ImportModule({ data, update, user }) {
           items: String(pickCol(raw, "item") || "").trim(), amount, billing,
           dueDate: billing === "月結" ? dueDate : "", paidDate: payStatus === "已付款" ? date : "",
           payStatus, invoiceStatus: ["未收到", "已收到", "不需發票"].includes(ivs) ? ivs : "未收到",
-          invoiceNo: "", attachment: null, note: String(pickCol(raw, "note") || ""),
+          invoiceNo: "", attachment: null,
+          docType: billing === "月結" ? "" : NO_DOC,
+          noDocReason: billing === "月結" ? "" : "Excel 匯入舊資料，原始憑證未逐筆登錄（如有需要請補件）",
+          note: String(pickCol(raw, "note") || ""),
         };
       }
 
@@ -3593,6 +3705,7 @@ function ImportModule({ data, update, user }) {
           requester: String(pickCol(raw, "payer") || "").trim(), requestDate: normDate(pickCol(raw, "requestDate")) || "",
           dueDate: normDate(pickCol(raw, "dueDate")) || "", received, receivedDate: normDate(pickCol(raw, "receivedDate")) || "",
           status, note: String(pickCol(raw, "note") || ""),
+          docType: NO_DOC, noDocReason: "Excel 匯入舊資料，原始憑證未逐筆登錄（如有需要請補件）",
         };
       }
 
@@ -3799,15 +3912,18 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   };
 
   /* ── 本次新增（尚未送出，先暫存在畫面上，可自由增減列） ── */
-  const blankExp = () => ({ key: uid("d"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金" });
-  const blankInc = () => ({ key: uid("d"), categoryName: "", item: "", amount: "", payMethod: "現金" });
-  const blankOrd = () => ({ key: uid("d"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "" });
+  const blankExp = () => ({ key: uid("d"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金", docType: "", noDocReason: "" });
+  const blankInc = () => ({ key: uid("d"), categoryName: "", item: "", amount: "", payMethod: "現金", docType: "", noDocReason: "" });
+  const blankOrd = () => ({ key: uid("d"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", docType: "", noDocReason: "" });
   const [expRows, setExpRows] = useState([blankExp()]);
   const [incRows, setIncRows] = useState([blankInc()]);
   const [ordRows, setOrdRows] = useState([blankOrd()]);
   const setExpRow = (key, k, v) => setExpRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setIncRow = (key, k, v) => setIncRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setOrdRow = (key, k, v) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const patchExpRow = (key, patch) => setExpRows((rows) => rows.map((r) => r.key === key ? { ...r, ...patch } : r));
+  const patchIncRow = (key, patch) => setIncRows((rows) => rows.map((r) => r.key === key ? { ...r, ...patch } : r));
+  const patchOrdRow = (key, patch) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const delExpRow = (key) => setExpRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankExp()]);
   const delIncRow = (key) => setIncRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankInc()]);
   const delOrdRow = (key) => setOrdRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankOrd()]);
@@ -3832,16 +3948,24 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       if (r.categoryName.trim() === "廠商原料叫貨") return alert("「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。");
       if (!r.item.trim()) return alert("支出：請填寫品項");
       if (!(num(r.amount) > 0)) return alert("支出：金額需大於 0");
+      const docErr = validateDoc(r);
+      if (docErr) return alert(`支出：${docErr}`);
     }
     for (const r of filledInc) {
       if (!r.categoryName.trim()) return alert("收入：請選擇或輸入類別");
       if (!r.item.trim()) return alert("收入：請填寫項目");
       if (!(num(r.amount) > 0)) return alert("收入：金額需大於 0");
+      const docErr = validateDoc(r);
+      if (docErr) return alert(`收入：${docErr}`);
     }
     for (const r of filledOrd) {
       if (!r.vendorId) return alert("叫貨：請選擇廠商");
       if (!(num(r.amount) > 0)) return alert("叫貨：金額需大於 0");
       if (r.billing === "月結" && !r.dueDate) return alert("叫貨：月結需填寫預計付款日");
+      if (r.billing !== "月結") {
+        const docErr = validateDoc(r);
+        if (docErr) return alert(`叫貨：${docErr}`);
+      }
     }
 
     const salesFilled = sf && !salesLocked && ["pos", "coop", "card", "twpay", "linepay", "online", "transfer"].some((k) => num(sf[k]) > 0);
@@ -3861,6 +3985,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       return {
         ...EXP_EMPTY, id: uid("ex"), date, storeId: curStore, categoryId, item: r.item.trim(),
         vendorId: r.vendorId, amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
+        docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "",
         status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       };
     });
@@ -3870,6 +3995,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       return {
         ...INC_EMPTY, id: uid("in"), date, storeId: curStore, categoryId, item: r.item.trim(),
         amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
+        docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "",
         status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       };
     });
@@ -3877,7 +4003,9 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       id: uid("po"), date, storeId: curStore, vendorId: r.vendorId, items: r.items,
       amount: num(r.amount), billing: r.billing, dueDate: r.billing === "月結" ? r.dueDate : "",
       paidDate: r.billing === "現結" ? date : "", payStatus: r.billing === "現結" ? "已付款" : "未付款",
-      invoiceStatus: "未收到", invoiceNo: "", attachment: null, note: "", createdBy: user.id,
+      invoiceStatus: "未收到", invoiceNo: "", attachment: null,
+      docType: r.billing !== "月結" ? r.docType : "", noDocReason: r.billing !== "月結" && r.docType === NO_DOC ? r.noDocReason.trim() : "",
+      note: "", createdBy: user.id,
     }));
 
     let salesRec = null;
@@ -4010,7 +4138,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         <datalist id="dl-daily-expcat">{data.categories.filter((x) => x.active && x.id !== ORDER_CAT_ID).map((x) => <option key={x.id} value={x.name} />)}</datalist>
         <div className="pl-scroll-x">
           <table className="pl-table">
-            <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th></th></tr></thead>
+            <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th>單據／憑證 *</th><th></th></tr></thead>
             <tbody>
               {expRows.map((r) => (
                 <tr key={r.key}>
@@ -4025,6 +4153,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                       {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
                     </select>
                   </td>
+                  <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchExpRow(r.key, patch)} />
                   <td><button className="pl-btn small danger" onClick={() => delExpRow(r.key)}>✕</button></td>
                 </tr>
               ))}
@@ -4062,7 +4191,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         <datalist id="dl-daily-inccat">{(data.incomeCategories || []).filter((x) => x.active).map((x) => <option key={x.id} value={x.name} />)}</datalist>
         <div className="pl-scroll-x">
           <table className="pl-table">
-            <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th></th></tr></thead>
+            <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th>單據／憑證 *</th><th></th></tr></thead>
             <tbody>
               {incRows.map((r) => (
                 <tr key={r.key}>
@@ -4077,6 +4206,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                       {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
                     </select>
                   </td>
+                  <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchIncRow(r.key, patch)} />
                   <td><button className="pl-btn small danger" onClick={() => delIncRow(r.key)}>✕</button></td>
                 </tr>
               ))}
@@ -4110,7 +4240,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>本次新增（尚未送出）</div>
         <div className="pl-scroll-x">
           <table className="pl-table">
-            <thead><tr><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>結帳</th><th>預計付款日</th><th></th></tr></thead>
+            <thead><tr><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>結帳</th><th>預計付款日</th><th>單據／憑證</th><th></th></tr></thead>
             <tbody>
               {ordRows.map((r) => (
                 <tr key={r.key}>
@@ -4131,6 +4261,9 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                       ? <input className="pl-input" placeholder="YYYY/MM/DD" value={r.dueDate} onChange={(e) => setOrdRow(r.key, "dueDate", e.target.value)} />
                       : <span style={{ color: T.sub, fontSize: 12.5 }}>現結・當日付清</span>}
                   </td>
+                  {r.billing === "月結"
+                    ? <td style={{ fontSize: 12.5, color: T.sub, minWidth: 140 }}>月結憑證於「月結對帳」登錄統一發票</td>
+                    : <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchOrdRow(r.key, patch)} />}
                   <td><button className="pl-btn small danger" onClick={() => delOrdRow(r.key)}>✕</button></td>
                 </tr>
               ))}
@@ -4253,7 +4386,8 @@ const rowExpense = (r, ctx) => ({
   廠商ID: r.vendorId || "", 廠商名稱: ctx.venOf(r.vendorId), 金額: num(r.amount),
   付款方式: r.payMethod || "", 付款人: r.payer || "",
   員工代墊: r.isAdvance ? "是" : "否", 已核銷: r.isReimbursed ? "是" : "否", 核銷日期: r.reimburseDate || "",
-  發票號碼: r.invoiceNo || "", 附件檔名: r.attachment ? r.attachment.name : "",
+  發票號碼: r.invoiceNo || "", 憑證類型: r.docType || "", 無憑證原因: r.noDocReason || "",
+  附件檔名: r.attachment ? r.attachment.name : "",
   審核狀態: r.status, 備註: r.note || "",
   建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy), 建立時間: r.createdAt || "",
   審核人ID: r.reviewedBy || "", 審核人姓名: ctx.userNm(r.reviewedBy), 審核時間: r.reviewedAt || "",
@@ -4263,7 +4397,8 @@ const rowIncome = (r, ctx) => ({
   紀錄ID: r.id, 日期: r.date, 門店ID: r.storeId || "", 門店名稱: ctx.nameOf(r.storeId),
   類別ID: r.categoryId || "", 類別名稱: ctx.incCatOf(r.categoryId), 項目: r.item || "",
   金額: num(r.amount), 收款方式: r.payMethod || "", 經手人: r.payer || "",
-  發票號碼: r.invoiceNo || "", 附件檔名: r.attachment ? r.attachment.name : "",
+  發票號碼: r.invoiceNo || "", 憑證類型: r.docType || "", 無憑證原因: r.noDocReason || "",
+  附件檔名: r.attachment ? r.attachment.name : "",
   審核狀態: r.status, 備註: r.note || "",
   建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy), 建立時間: r.createdAt || "",
   審核人ID: r.reviewedBy || "", 審核人姓名: ctx.userNm(r.reviewedBy), 審核時間: r.reviewedAt || "",
@@ -4274,6 +4409,7 @@ const rowOrder = (r, ctx) => ({
   廠商ID: r.vendorId || "", 廠商名稱: ctx.venOf(r.vendorId), 品項說明: r.items || "",
   金額: num(r.amount), 結帳方式: r.billing || "", 預計付款日: r.dueDate || "", 實際付款日: r.paidDate || "",
   付款狀態: r.payStatus || "", 發票狀態: r.invoiceStatus || "", 發票號碼: r.invoiceNo || "",
+  憑證類型: r.docType || "", 無憑證原因: r.noDocReason || "",
   附件檔名: r.attachment ? r.attachment.name : "", 備註: r.note || "",
   建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy),
 });
@@ -4282,7 +4418,8 @@ const rowAR = (r, ctx) => ({
   紀錄ID: r.id, 編號: r.no || "", 日期: r.date, 客戶: r.customer || "", 發票號碼: r.invoiceNo || "",
   請款金額: num(r.amount), 請款人: r.requester || "", 請款日期: r.requestDate || "", 到期日: r.dueDate || "",
   已收金額: num(r.received), 未收金額: num(r.amount) - num(r.received), 實際收款日: r.receivedDate || "",
-  收款狀態: r.status, 附件檔名: r.attachment ? r.attachment.name : "", 備註: r.note || "",
+  收款狀態: r.status, 憑證類型: r.docType || "", 無憑證原因: r.noDocReason || "",
+  附件檔名: r.attachment ? r.attachment.name : "", 備註: r.note || "",
   建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy), 建立時間: r.createdAt || "",
 });
 
@@ -4318,7 +4455,8 @@ const parseExpense = (row) => ({
   categoryId: row["類別ID"] || "", item: row["品項"] || "", vendorId: row["廠商ID"] || null,
   amount: num(row["金額"]), payMethod: row["付款方式"] || "", payer: row["付款人"] || "",
   isAdvance: row["員工代墊"] === "是", isReimbursed: row["已核銷"] === "是", reimburseDate: row["核銷日期"] || "",
-  invoiceNo: row["發票號碼"] || "", attachment: null, note: row["備註"] || "",
+  invoiceNo: row["發票號碼"] || "", docType: row["憑證類型"] || "", noDocReason: row["無憑證原因"] || "",
+  attachment: null, note: row["備註"] || "",
   createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
   status: row["審核狀態"] || "草稿", reviewedBy: row["審核人ID"] || null, reviewedAt: row["審核時間"] || "",
 });
@@ -4327,6 +4465,7 @@ const parseIncome = (row) => ({
   id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "",
   categoryId: row["類別ID"] || "", item: row["項目"] || "", amount: num(row["金額"]),
   payMethod: row["收款方式"] || "", payer: row["經手人"] || "", invoiceNo: row["發票號碼"] || "",
+  docType: row["憑證類型"] || "", noDocReason: row["無憑證原因"] || "",
   attachment: null, note: row["備註"] || "",
   createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
   status: row["審核狀態"] || "草稿", reviewedBy: row["審核人ID"] || null, reviewedAt: row["審核時間"] || "",
@@ -4336,7 +4475,8 @@ const parseOrder = (row) => ({
   id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "", vendorId: row["廠商ID"] || null,
   items: row["品項說明"] || "", amount: num(row["金額"]), billing: row["結帳方式"] || "現結",
   dueDate: row["預計付款日"] || "", paidDate: row["實際付款日"] || "", payStatus: row["付款狀態"] || "未付款",
-  invoiceStatus: row["發票狀態"] || "未收到", invoiceNo: row["發票號碼"] || "", attachment: null,
+  invoiceStatus: row["發票狀態"] || "未收到", invoiceNo: row["發票號碼"] || "",
+  docType: row["憑證類型"] || "", noDocReason: row["無憑證原因"] || "", attachment: null,
   createdBy: row["建立人ID"] || null, note: row["備註"] || "",
 });
 
@@ -4345,6 +4485,7 @@ const parseAR = (row) => ({
   invoiceNo: row["發票號碼"] || "", amount: num(row["請款金額"]), requester: row["請款人"] || "",
   requestDate: row["請款日期"] || "", dueDate: row["到期日"] || "", received: num(row["已收金額"]),
   receivedDate: row["實際收款日"] || "", status: row["收款狀態"] || "未請款", note: row["備註"] || "",
+  docType: row["憑證類型"] || "", noDocReason: row["無憑證原因"] || "",
   attachment: null, createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
 });
 
