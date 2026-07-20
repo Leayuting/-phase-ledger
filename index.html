@@ -761,21 +761,27 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
   const incM = (data.incomes || []).filter((r) => inMonth(r) && r.status !== "已退回");
 
   const revenue = salesM.reduce((a, s) => a + calcSales(s).net, 0);
-  /* 現金收入（推算）：預設由本月日結資料加總計算；若該月＋該門店篩選（全部門店或個別門店，
-     各自獨立）有手動調整值（早期匯入的完整帳表，計算口徑跟系統不同，直接以人工核對後的
-     正確金額為準），則優先採用手動調整值，不受後續日結資料異動影響 */
-  const cashScopeKey = storeFilter || "all";
-  const cashOverride = (data.cashIncomeOverrides || {})[month]?.[cashScopeKey];
-  const cashComputed = salesM.reduce((a, s) => a + calcSales(s).cash, 0);
-  const cashSum = cashOverride !== undefined ? cashOverride : cashComputed;
-  const canEditCashOverride = perm.isAdmin(user) || perm.isAcct(user);
+  /* 現金收入（推算）：個別門店可設定手動調整值（早期匯入的完整帳表，計算口徑跟系統不同，
+     直接以人工核對後的正確金額為準），優先於系統自動計算、不受後續日結資料異動影響；
+     「全部門店」永遠是「各門店調整後金額」的加總，不能單獨設定，確保口徑一致 */
+  const cashOverridesForMonth = (data.cashIncomeOverrides || {})[month] || {};
+  const cashByStore = {};
+  topStores.forEach((s) => {
+    const computed = data.dailySales.filter((r) => monthOf(r.date) === month && acctOf(r.storeId) === s.id).reduce((a, r) => a + calcSales(r).cash, 0);
+    cashByStore[s.id] = { computed, final: cashOverridesForMonth[s.id] !== undefined ? cashOverridesForMonth[s.id] : computed, overridden: cashOverridesForMonth[s.id] !== undefined };
+  });
+  const cashOverride = storeFilter ? cashOverridesForMonth[storeFilter] : undefined;
+  const cashComputed = storeFilter ? (cashByStore[storeFilter]?.computed || 0) : Object.values(cashByStore).reduce((a, s) => a + s.computed, 0);
+  const cashSum = storeFilter ? (cashByStore[storeFilter]?.final ?? cashComputed) : Object.values(cashByStore).reduce((a, s) => a + s.final, 0);
+  const cashAnyStoreOverridden = Object.values(cashByStore).some((s) => s.overridden);
+  const canEditCashOverride = !!storeFilter && (perm.isAdmin(user) || perm.isAcct(user));
   const [editingCash, setEditingCash] = useState(null); // { value }
   const saveCashOverride = () => {
     const v = editingCash.value.trim();
     update((d) => {
       const next = { ...(d.cashIncomeOverrides || {}) };
       const forMonth = { ...(next[month] || {}) };
-      if (v === "") delete forMonth[cashScopeKey]; else forMonth[cashScopeKey] = num(v);
+      if (v === "") delete forMonth[storeFilter]; else forMonth[storeFilter] = num(v);
       next[month] = forMonth;
       return { ...d, cashIncomeOverrides: next };
     });
@@ -1007,8 +1013,10 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
 
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 16 }}>
         <KPI label="現金收入（推算）" value={fmt(cashSum)}
-          tone={cashOverride !== undefined ? "yellow" : undefined}
-          sub={cashOverride !== undefined ? `已手動調整${canEditCashOverride ? "（點擊修改／還原）" : ""}` : (canEditCashOverride ? "點擊可手動調整" : undefined)}
+          tone={(storeFilter ? cashOverride !== undefined : cashAnyStoreOverridden) ? "yellow" : undefined}
+          sub={storeFilter
+            ? (cashOverride !== undefined ? `已手動調整${canEditCashOverride ? "（點擊修改／還原）" : ""}` : (canEditCashOverride ? "點擊可手動調整" : undefined))
+            : (cashAnyStoreOverridden ? "已依各門店調整後金額加總" : undefined)}
           onClick={canEditCashOverride ? () => setEditingCash({ value: cashOverride !== undefined ? String(cashOverride) : "" }) : undefined} />
         <KPI label="應收未收金額" value={fmt(arUnpaid)} tone={overdueAR.length ? "red" : undefined} sub="累積未清，不受篩選影響" />
         <KPI label="月結未付款金額" value={fmt(monthlyUnpaid)} tone={overdueAP.length ? "red" : undefined} sub="累積未清，不受篩選影響" />
@@ -1141,11 +1149,11 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
       {detail && <KpiDetailModal title={detail.title} rows={detail.rows} onClose={() => setDetail(null)} />}
 
       {editingCash && (
-        <Modal title={`手動調整現金收入（推算）－${monthLabel(month)}・${storeFilter ? nameOf(storeFilter) : "全部門店"}`} onClose={() => setEditingCash(null)} width={440}>
+        <Modal title={`手動調整現金收入（推算）－${monthLabel(month)}・${nameOf(storeFilter)}`} onClose={() => setEditingCash(null)} width={440}>
           <div style={{ fontSize: 13, color: T.sub, marginBottom: 10 }}>
             系統預設值：{fmt(cashComputed)}。若該月帳務資料來源（如匯入的完整帳表）計算口徑跟系統不同，可在此填入正確金額，
             將優先顯示此手動調整值，不受後續日結資料異動影響；清空欄位並儲存可還原為系統自動計算。
-            此調整值僅套用於目前的門店篩選範圍（{storeFilter ? nameOf(storeFilter) : "全部門店"}），與其他門店篩選各自獨立。
+            「全部門店」檢視會自動加總各門店調整後的金額，不能單獨設定。
           </div>
           <Field label="手動調整金額（留空＝還原自動計算）">
             <input className="pl-input" inputMode="decimal" value={editingCash.value} onChange={(e) => setEditingCash({ value: e.target.value })} placeholder={String(cashComputed)} autoFocus />
