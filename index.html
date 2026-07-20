@@ -780,15 +780,16 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
 
   /* 金額明細下鑽：點擊 KPI 卡片時顯示組成該金額的實際紀錄或子項目 */
   const [detail, setDetail] = useState(null);
-  const rowsFromExp = (recs) => recs.map((e) => ({ date: e.date, store: nameOf(e.storeId), item: `${catById[e.categoryId]?.name || "—"}｜${e.item}`, amount: num(e.amount) }));
-  const rowsFromInc = (recs) => recs.map((r) => ({ date: r.date, store: nameOf(r.storeId), item: `${incCatById[r.categoryId]?.name || "—"}｜${r.item}`, amount: num(r.amount) }));
-  const rowsFromSales = (recs) => recs.map((s) => ({ date: s.date, store: nameOf(s.storeId), item: "每日營業額", amount: calcSales(s).net }));
+  /* 明細一律從 1 號開始（日期由舊到新），跟帳本習慣的排序方式一致 */
+  const rowsFromExp = (recs) => recs.map((e) => ({ date: e.date, store: nameOf(e.storeId), item: `${catById[e.categoryId]?.name || "—"}｜${e.item}`, amount: num(e.amount) })).sort((a, b) => cmpDate(a.date, b.date));
+  const rowsFromInc = (recs) => recs.map((r) => ({ date: r.date, store: nameOf(r.storeId), item: `${incCatById[r.categoryId]?.name || "—"}｜${r.item}`, amount: num(r.amount) })).sort((a, b) => cmpDate(a.date, b.date));
+  const rowsFromSales = (recs) => recs.map((s) => ({ date: s.date, store: nameOf(s.storeId), item: "每日營業額", amount: calcSales(s).net })).sort((a, b) => cmpDate(a.date, b.date));
   /* 按日期彙總金額（不展開每一筆明細），只顯示「日期」＋「當日總金額」兩欄，
      用在筆數多、只需要快速掌握每日概況、不需要逐筆檢視的明細（例如每日支出） */
   const rowsByDate = (recs) => {
     const byDate = {};
     recs.forEach((r) => { byDate[r.date] = (byDate[r.date] || 0) + num(r.amount); });
-    return Object.entries(byDate).sort((a, b) => cmpDate(b[0], a[0])).map(([date, amount]) => ({ date, amount }));
+    return Object.entries(byDate).sort((a, b) => cmpDate(a[0], b[0])).map(([date, amount]) => ({ date, amount }));
   };
   const openDetail = (title, rows) => setDetail({ title, rows });
 
@@ -1192,7 +1193,7 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
 
   const rows = data.dailySales
     .filter((r) => monthOf(r.date) === month && r.storeId === curStore && perm.canSeeRecord(user, r))
-    .sort((a, b) => cmpDate(b.date, a.date));
+    .sort((a, b) => cmpDate(a.date, b.date));
   const totalRevenue = rows.reduce((a, r) => a + calcSales(r).net, 0);
   const totalCash = rows.reduce((a, r) => a + calcSales(r).cash, 0);
 
@@ -1678,7 +1679,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
     if (flt.payer && !(r.payer || "").includes(flt.payer)) return false;
     if (flt.status && r.status !== flt.status) return false;
     return true;
-  }).sort((a, b) => cmpDate(b.date, a.date));
+  }).sort((a, b) => cmpDate(a.date, b.date));
 
   /* 合計排除「已退回」（除非使用者特意篩選只看已退回），跟營運總覽的口徑一致；
      已退回紀錄本身仍留在表格裡可見，只是不計入合計。「固定支出」＝類別屬於營運總覽會
@@ -1955,7 +1956,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
   const rows = (data.incomes || []).filter((r) =>
     monthOf(r.date) === month && viewStoreIds.includes(r.storeId) &&
     perm.canSeeRecord(user, r)
-  ).sort((a, b) => cmpDate(b.date, a.date));
+  ).sort((a, b) => cmpDate(a.date, b.date));
   /* 合計排除「已退回」，跟營運總覽的口徑一致；已退回紀錄本身仍留在表格裡可見，只是不計入合計。
      另外把固定收入（有 fixedItemId，代表是從「主檔管理→固定收入項目」帶入的紀錄）獨立列出。
      這裡的合計已經是目前分頁涵蓋的所有門店區塊（例如中山門市＋烘豆場）加總後的結果 */
@@ -2357,7 +2358,7 @@ function OrderModule({ data, update, user, users, logAudit }) {
   const visibleAll = data.orders.filter((r) => !scope || scope.includes(r.storeId));
   const visible = visibleAll.filter((r) => viewStoreIds.includes(r.storeId));
   const rows = visible.filter((r) => (dateFlt ? r.date === dateFlt : monthOf(r.date) === month) && (!vFlt || r.vendorId === vFlt))
-    .sort((a, b) => cmpDate(b.date, a.date));
+    .sort((a, b) => cmpDate(a.date, b.date));
 
   /* 統計 */
   const monthSum = rows.reduce((a, o) => a + num(o.amount), 0);
@@ -2910,7 +2911,7 @@ function ARModule({ data, update, user, logAudit }) {
 
   const rows = data.receivables
     .filter((r) => showAll || num(r.amount) - num(r.received) > 0)
-    .sort((a, b) => cmpDate(b.date, a.date));
+    .sort((a, b) => cmpDate(a.date, b.date));
   const totalUnpaid = data.receivables.filter((r) => r.status !== "呆帳").reduce((a, r) => a + Math.max(0, num(r.amount) - num(r.received)), 0);
 
   const nextNo = (date) => {
