@@ -1141,11 +1141,24 @@ function StoreTabs({ stores, value, onChange }) {
    那一天當成精確日期篩選傳出去；沒傳入的頁面下拉選單選日期只用來跳月份。 */
 function MonthPicker({ value, onChange, onToday, onPickDate }) {
   const [open, setOpen] = useState(false);
-  const pickedDate = value + "/01"; // 下拉曆只用來選月份時，預設帶當月 1 號讓 <input type="date"> 有值可顯示
+  /* 選好的日期先放在 draft（不會立刻套用），按「前往」才真的套用。
+     這樣可以避開 <input type="date"> 的原生行為：如果選到的日期跟目前顯示的值一樣
+     （例如預設就帶當月 1 號，使用者又剛好要選 1 號），瀏覽器不會觸發 onChange，
+     如果之前是靠 onChange 直接套用＋關閉，就會變成「選 1 號完全沒反應」。
+     現在改成按鈕直接讀 draft 目前的值套用，不管 onChange 有沒有被觸發都能正確運作，
+     彈窗也只有按「前往」或點外面才會關閉，不會選到一半自己跳掉。 */
+  const [draft, setDraft] = useState(value + "/01");
+  const openPicker = () => { setDraft(value + "/01"); setOpen((o) => !o); };
+  const confirmDraft = () => {
+    if (!draft || !validDate(draft)) return;
+    onChange(monthOf(draft));
+    if (onPickDate) onPickDate(draft);
+    setOpen(false);
+  };
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
       <button className="pl-btn small" onClick={() => onChange(monthShift(value, -1))} aria-label="上一月">‹</button>
-      <button type="button" className="pl-btn small" style={{ minWidth: 118 }} onClick={() => setOpen((o) => !o)}>
+      <button type="button" className="pl-btn small" style={{ minWidth: 118 }} onClick={openPicker}>
         📅 {monthLabel(value)} ▾
       </button>
       <button className="pl-btn small" onClick={() => onChange(monthShift(value, 1))} aria-label="下一月">›</button>
@@ -1156,16 +1169,12 @@ function MonthPicker({ value, onChange, onToday, onPickDate }) {
            <input type="date"> 的原生日曆是瀏覽器自己畫的懸浮層，跟頁面上其他元素的點擊判定方式不一樣，
            背景板很容易把「點原生日曆上的日期」誤判成「點外面」，導致選日期選到一半整個彈窗突然關掉、
            跳來跳去點不到 */
-        <div className="pl-card" style={{ position: "absolute", top: "110%", left: 0, zIndex: 40, padding: 10 }}
+        <div className="pl-card" style={{ position: "absolute", top: "110%", left: 0, zIndex: 40, padding: 10, display: "flex", gap: 6 }}
           onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false); }}>
-          <input type="date" className="pl-input" value={pickedDate.replace(/\//g, "-")}
-            onChange={(e) => {
-              if (!e.target.value) return;
-              const d = e.target.value.replace(/-/g, "/");
-              onChange(monthOf(d));
-              if (onPickDate) onPickDate(d);
-              setOpen(false);
-            }} autoFocus />
+          <input type="date" className="pl-input" value={draft.replace(/\//g, "-")}
+            onChange={(e) => { if (e.target.value) setDraft(e.target.value.replace(/-/g, "/")); }}
+            onKeyDown={(e) => { if (e.key === "Enter") confirmDraft(); }} autoFocus />
+          <button type="button" className="pl-btn small primary" onClick={confirmDraft}>前往</button>
         </div>
       )}
     </div>
