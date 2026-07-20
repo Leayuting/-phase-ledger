@@ -1151,8 +1151,10 @@ function MonthPicker({ value, onChange, onToday, onPickDate, onClearDate, exactD
     if (onToday) onToday(d); else onPickDate(d);
   };
   const goMonthMode = () => {
-    if (!exactDate) return;
-    if (onClearDate) onClearDate();
+    if (exactDate && onClearDate) onClearDate();
+    /* 切到月份檢視的同時直接把選月份的彈窗打開，不用使用者切完模式後還要再點一次日曆按鈕才能選月份 */
+    setDraft(value + "/01");
+    setOpen(true);
   };
   /* 選好的日期先放在 draft（不會立刻套用），按「前往」才真的套用。
      這樣可以避開 <input type="date"> 的原生行為：如果選到的日期跟目前顯示的值一樣
