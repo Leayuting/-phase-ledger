@@ -742,7 +742,7 @@ const perm = {
 ──────────────────────────────────────────────*/
 const CHART_COLORS = ["#7B4326", "#3F7350", "#A8791A", "#5B6E8C", "#AE3B2C", "#8C7B6A", "#C47878", "#4A6B6B", "#9A8C3F", "#6E5B8C"];
 
-function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, goto }) {
+function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreFilter, users, goto }) {
   const stores = data.stores.filter((s) => s.active);
   const retail = stores.filter((s) => s.retail);
   const acctOf = (sid) => acctStoreId(data.stores, sid);
@@ -761,7 +761,23 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const incM = (data.incomes || []).filter((r) => inMonth(r) && r.status !== "已退回");
 
   const revenue = salesM.reduce((a, s) => a + calcSales(s).net, 0);
-  const cashSum = salesM.reduce((a, s) => a + calcSales(s).cash, 0);
+  /* 現金收入（推算）：預設由本月日結資料加總計算；若該月（僅限「全部門店」檢視）有手動
+     調整值（早期匯入的完整帳表，計算口徑跟系統不同，直接以人工核對後的正確金額為準），
+     則優先採用手動調整值，不受後續日結資料異動影響 */
+  const cashOverride = !storeFilter ? (data.cashIncomeOverrides || {})[month] : undefined;
+  const cashComputed = salesM.reduce((a, s) => a + calcSales(s).cash, 0);
+  const cashSum = cashOverride !== undefined ? cashOverride : cashComputed;
+  const canEditCashOverride = !storeFilter && (perm.isAdmin(user) || perm.isAcct(user));
+  const [editingCash, setEditingCash] = useState(null); // { value }
+  const saveCashOverride = () => {
+    const v = editingCash.value.trim();
+    update((d) => {
+      const next = { ...(d.cashIncomeOverrides || {}) };
+      if (v === "") delete next[month]; else next[month] = num(v);
+      return { ...d, cashIncomeOverrides: next };
+    });
+    setEditingCash(null);
+  };
   /* 廠商叫貨：月結廠商若有未取消的發票調整，採發票／請款金額；否則沿用原始叫貨累計金額。
      單一門店檢視時，只要該廠商當月的月結叫貨沒有涉及篩選範圍外的其他門店，一樣會套用發票調整
      （詳見 adjustedOrderSum） */
@@ -987,7 +1003,10 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
       </div>
 
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 16 }}>
-        <KPI label="現金收入（推算）" value={fmt(cashSum)} />
+        <KPI label="現金收入（推算）" value={fmt(cashSum)}
+          tone={cashOverride !== undefined ? "yellow" : undefined}
+          sub={cashOverride !== undefined ? `已手動調整${canEditCashOverride ? "（點擊修改／還原）" : ""}` : (canEditCashOverride ? "點擊可手動調整" : undefined)}
+          onClick={canEditCashOverride ? () => setEditingCash({ value: cashOverride !== undefined ? String(cashOverride) : "" }) : undefined} />
         <KPI label="應收未收金額" value={fmt(arUnpaid)} tone={overdueAR.length ? "red" : undefined} sub="累積未清，不受篩選影響" />
         <KPI label="月結未付款金額" value={fmt(monthlyUnpaid)} tone={overdueAP.length ? "red" : undefined} sub="累積未清，不受篩選影響" />
       </div>
@@ -1117,6 +1136,22 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
       </div>
 
       {detail && <KpiDetailModal title={detail.title} rows={detail.rows} onClose={() => setDetail(null)} />}
+
+      {editingCash && (
+        <Modal title={`手動調整現金收入（推算）－${monthLabel(month)}`} onClose={() => setEditingCash(null)} width={440}>
+          <div style={{ fontSize: 13, color: T.sub, marginBottom: 10 }}>
+            系統預設值：{fmt(cashComputed)}。若該月帳務資料來源（如匯入的完整帳表）計算口徑跟系統不同，可在此填入正確金額，
+            將優先顯示此手動調整值，不受後續日結資料異動影響；清空欄位並儲存可還原為系統自動計算。
+          </div>
+          <Field label="手動調整金額（留空＝還原自動計算）">
+            <input className="pl-input" inputMode="decimal" value={editingCash.value} onChange={(e) => setEditingCash({ value: e.target.value })} placeholder={String(cashComputed)} autoFocus />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button className="pl-btn" onClick={() => setEditingCash(null)}>取消</button>
+            <button className="pl-btn primary" onClick={saveCashOverride}>儲存</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -6733,6 +6768,11 @@ function App() {
             cashLockedAt: r.reviewedAt || r.createdAt || nowStamp(), cashLockedBy: null, reopenLogs: [],
           };
         });
+        /* 2026/06 匯入時已是完整帳表，計算口徑跟系統的「現金收入（推算）」不同，
+           人工核對後金額應為 861823，設為手動調整值（一次性設定，之後可於營運總覽
+           點擊該卡片自行修改或還原） */
+        if (!stored.cashIncomeOverrides) stored.cashIncomeOverrides = {};
+        if (stored.cashIncomeOverrides["2026/06"] === undefined) stored.cashIncomeOverrides["2026/06"] = 861823;
         delete stored.users; delete stored.currentUserId; // 舊資料殘留欄位，使用者現改由 profiles 提供
         setData(stored);
         /* 上面這些都是登入當下對資料做的搬遷／補值（新類別、改名、去重……），一定要立刻存回
@@ -6849,7 +6889,7 @@ function App() {
 
   const body = (() => {
     switch (page) {
-      case "dashboard": return <Dashboard data={data} month={month} setMonth={setMonth} storeFilter={storeFilter} setStoreFilter={setStoreFilter} users={profiles} goto={goto} />;
+      case "dashboard": return <Dashboard data={data} update={update} user={user} month={month} setMonth={setMonth} storeFilter={storeFilter} setStoreFilter={setStoreFilter} users={profiles} goto={goto} />;
       case "daily": return <DailyKeyModule {...modProps} goto={goto} />;
       case "sales": return <SalesModule {...modProps} />;
       case "expenses": return <ExpenseModule {...modProps} />;
