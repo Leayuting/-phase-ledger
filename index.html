@@ -636,31 +636,29 @@ const acctStoreId = (stores, sid) => {
    （每個月結廠商的原始加總／發票金額／使用中的 payable，供明細下鑽或報表引用）。 */
 function adjustedOrderSum(data, month, storeFilter) {
   const acctOf = (sid) => acctStoreId(data.stores, sid);
-  const allMonthOrders = data.orders.filter((o) => monthOf(o.date) === month);
-  const ordM = allMonthOrders.filter((o) => !storeFilter || acctOf(o.storeId) === storeFilter);
+  const ordM = data.orders.filter((o) => monthOf(o.date) === month && (!storeFilter || acctOf(o.storeId) === storeFilter));
   const cashOrdM = ordM.filter((o) => o.billing !== "月結");
   const monthlyOrdM = ordM.filter((o) => o.billing === "月結");
-  const vendorGroups = {};
-  monthlyOrdM.forEach((o) => { (vendorGroups[o.vendorId] = vendorGroups[o.vendorId] || []).push(o); });
+  /* 月結對帳是依「廠商＋門店」分別建立應付帳款／統一發票（不是整個廠商合併一張），
+     所以這裡也依廠商＋門店分組，找對應的那一筆發票；不用再另外判斷這個廠商當月
+     是否也叫貨給篩選範圍外的其他門店，因為每個門店本來就各自獨立對帳 */
+  const groups = {};
+  monthlyOrdM.forEach((o) => {
+    const sid = acctOf(o.storeId);
+    const key = o.vendorId + "__" + sid;
+    (groups[key] = groups[key] || { vendorId: o.vendorId, storeId: sid, list: [] }).list.push(o);
+  });
   let total = cashOrdM.reduce((a, o) => a + num(o.amount), 0);
   const adjustments = [];
-  Object.entries(vendorGroups).forEach(([vid, list]) => {
-    const rawSum = list.reduce((a, o) => a + num(o.amount), 0);
-    /* 只有在「這個廠商當月的月結叫貨，全部都落在目前篩選的門店範圍內」才安全套用發票金額——
-       發票沒有拆分門店，如果同一廠商當月同時服務篩選範圍外的其他門店，把整張發票套用到單一
-       門店會不準確，這種情況才退回用原始叫貨加總。大多數廠商只服務單一門店時，即使篩選到
-       單一門店也一樣能正確套用發票調整，不會被誤擋 */
-    const vendorAllOrdersThisMonth = allMonthOrders.filter((o) => o.billing === "月結" && o.vendorId === vid);
-    const hasOrdersOutsideFilter = !!storeFilter && vendorAllOrdersThisMonth.some((o) => acctOf(o.storeId) !== storeFilter);
-    const payable = !hasOrdersOutsideFilter
-      ? (data.payables || []).find((p) => p.vendorId === vid && p.period === month && !p.cancelled)
-      : null;
+  Object.values(groups).forEach((g) => {
+    const rawSum = g.list.reduce((a, o) => a + num(o.amount), 0);
+    const payable = (data.payables || []).find((p) => p.vendorId === g.vendorId && p.storeId === g.storeId && p.period === month && !p.cancelled);
     if (payable) {
       total += num(payable.invoiceAmount);
-      adjustments.push({ vendorId: vid, rawSum, invoiceAmount: num(payable.invoiceAmount), payable, list });
+      adjustments.push({ vendorId: g.vendorId, storeId: g.storeId, rawSum, invoiceAmount: num(payable.invoiceAmount), payable, list: g.list });
     } else {
       total += rawSum;
-      adjustments.push({ vendorId: vid, rawSum, invoiceAmount: null, payable: null, list });
+      adjustments.push({ vendorId: g.vendorId, storeId: g.storeId, rawSum, invoiceAmount: null, payable: null, list: g.list });
     }
   });
   return { total, cashOrdM, adjustments };
@@ -2674,17 +2672,24 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
   const monthly = data.orders.filter((o) =>
     o.billing === "月結" && monthOf(o.date) === settleMonth && (!scope || scope.includes(o.storeId))
   );
+  const acctOf = (sid) => acctStoreId(data.stores, sid);
 
-  /* 依廠商彙整；每組（廠商＋月份）對應唯一一筆應付帳款（可能尚未建立） */
-  const byVendor = {};
-  monthly.forEach((o) => { (byVendor[o.vendorId] = byVendor[o.vendorId] || []).push(o); });
-  const groups = Object.entries(byVendor).map(([vid, list]) => {
-    const total = list.reduce((a, o) => a + num(o.amount), 0);
-    const unpaid = list.filter((o) => o.payStatus !== "已付款");
-    const dueDates = list.map((o) => o.dueDate).filter(Boolean).sort(cmpDate);
+  /* 依「廠商＋門店」彙整；每組（廠商＋門店＋月份）對應唯一一筆應付帳款／統一發票——
+     廠商如果同一個月同時服務多間門店，會拆成多筆各自登錄發票、各自對帳、各自確認匯款，
+     不會合併成一筆整體金額 */
+  const byGroup = {};
+  monthly.forEach((o) => {
+    const sid = acctOf(o.storeId);
+    const key = o.vendorId + "__" + sid;
+    (byGroup[key] = byGroup[key] || { vid: o.vendorId, storeId: sid, list: [] }).list.push(o);
+  });
+  const groups = Object.values(byGroup).map((g) => {
+    const total = g.list.reduce((a, o) => a + num(o.amount), 0);
+    const unpaid = g.list.filter((o) => o.payStatus !== "已付款");
+    const dueDates = g.list.map((o) => o.dueDate).filter(Boolean).sort(cmpDate);
     const overdue = unpaid.some((o) => o.dueDate && cmpDate(o.dueDate, today) < 0);
-    const payable = (data.payables || []).find((p) => p.vendorId === vid && p.period === settleMonth) || null;
-    return { vid, list, total, unpaid, due: dueDates[0] || "—", overdue, payable };
+    const payable = (data.payables || []).find((p) => p.vendorId === g.vid && p.storeId === g.storeId && p.period === settleMonth) || null;
+    return { ...g, total, unpaid, due: dueDates[0] || "—", overdue, payable };
   }).sort((a, b) => b.total - a.total);
 
   const totalAll = groups.reduce((a, g) => a + g.total, 0);
@@ -2710,7 +2715,7 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
   const openInvoiceForm = (g) => {
     setInvoiceEditing(g.payable
       ? { ...g.payable }
-      : { id: null, vendorId: g.vid, period: settleMonth, invoiceNo: "", invoiceAmount: "", invoiceDate: today, attachment: null, discrepancyReason: "" });
+      : { id: null, vendorId: g.vid, storeId: g.storeId, period: settleMonth, invoiceNo: "", invoiceAmount: "", invoiceDate: today, attachment: null, discrepancyReason: "" });
   };
 
   const saveInvoice = (form, ordersTotal) => {
@@ -2763,17 +2768,20 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
       </div>
 
       <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 10 }}>
-        彙整 {monthLabel(settleMonth)}各廠商月結叫貨。月結廠商原則上一個月開立一張統一發票，不需要每筆叫貨都個別綁發票——
-        叫貨明細先歸屬在這裡，等廠商開立統一發票後，於該廠商登錄發票號碼／金額／附件即可，系統會自動核對發票金額跟叫貨總額。
+        彙整 {monthLabel(settleMonth)}各廠商・門店月結叫貨。每個廠商在每間門店各自一個月開立一張統一發票，
+        不需要每筆叫貨都個別綁發票——叫貨明細先按廠商＋門店歸屬在這裡，等廠商開立發票後，於該筆登錄發票號碼／
+        金額／附件即可，系統會自動核對發票金額跟該門店的叫貨總額；同一廠商如果同時服務多間門店，會分開列成多筆、各自對帳。
       </div>
 
       {groups.length === 0 && <div className="pl-card" style={{ padding: 24 }}><Empty text="此月份沒有月結叫貨紀錄" /></div>}
 
-      {groups.map((g) => (
-        <div key={g.vid} className="pl-card" style={{ marginBottom: 12, overflow: "hidden" }}>
+      {groups.map((g) => {
+        const groupKey = g.vid + "__" + g.storeId;
+        return (
+        <div key={groupKey} className="pl-card" style={{ marginBottom: 12, overflow: "hidden" }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, padding: "13px 16px", cursor: "pointer" }}
-            onClick={() => setOpen(open === g.vid ? null : g.vid)}>
-            <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 120 }}>{venOf(g.vid)}</div>
+            onClick={() => setOpen(open === groupKey ? null : groupKey)}>
+            <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 160 }}>{venOf(g.vid)}・{nameOf(g.storeId)}</div>
             <div style={{ fontSize: 13, color: T.sub }}>{g.list.length} 筆</div>
             <div>
               <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
@@ -2805,7 +2813,7 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
                   確認匯款 {fmt(g.unpaid.reduce((a, o) => a + num(o.amount), 0))}
                 </button>
               )}
-              <span style={{ color: T.sub, fontSize: 12 }}>{open === g.vid ? "▲" : "▼"}</span>
+              <span style={{ color: T.sub, fontSize: 12 }}>{open === groupKey ? "▲" : "▼"}</span>
             </div>
           </div>
 
@@ -2826,7 +2834,7 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
             </div>
           )}
 
-          {open === g.vid && (
+          {open === groupKey && (
             <div className="pl-scroll-x" style={{ borderTop: `1px solid ${T.line}` }}>
               <table className="pl-table">
                 <thead><tr>
@@ -2853,19 +2861,21 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
 
       {invoiceEditing && (() => {
-        const g = groups.find((x) => x.vid === invoiceEditing.vendorId);
+        const g = groups.find((x) => x.vid === invoiceEditing.vendorId && x.storeId === invoiceEditing.storeId);
         const ordersTotal = g ? g.total : 0;
         return (
           <PayableInvoiceForm form={invoiceEditing} setForm={setInvoiceEditing} vendorName={venOf(invoiceEditing.vendorId)}
+            storeName={nameOf(invoiceEditing.storeId)}
             ordersTotal={ordersTotal} onSave={(f) => saveInvoice(f, ordersTotal)} onClose={() => setInvoiceEditing(null)} />
         );
       })()}
 
       {cancelling && (
-        <Modal title={`取消發票調整・${venOf(cancelling.payable.vendorId)}・${monthLabel(cancelling.payable.period)}`} onClose={() => setCancelling(null)} width={480}>
+        <Modal title={`取消發票調整・${venOf(cancelling.payable.vendorId)}・${nameOf(cancelling.payable.storeId)}・${monthLabel(cancelling.payable.period)}`} onClose={() => setCancelling(null)} width={480}>
           <div style={{ fontSize: 13, color: T.sub, marginBottom: 12 }}>
             取消後，「廠商叫貨」統計（營運總覽／月報／年報）會恢復採用系統原始叫貨累計金額 {fmt(cancelling.rawSum)}，
             不再套用發票金額 {fmt(cancelling.payable.invoiceAmount)}。這筆發票登錄紀錄仍會保留供查閱，之後也可以重新編輯套用。
@@ -2884,11 +2894,11 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
   );
 }
 
-function PayableInvoiceForm({ form, setForm, vendorName, ordersTotal, onSave, onClose }) {
+function PayableInvoiceForm({ form, setForm, vendorName, storeName, ordersTotal, onSave, onClose }) {
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const diff = num(form.invoiceAmount) - ordersTotal;
   return (
-    <Modal title={`登錄統一發票・${vendorName}・${monthLabel(form.period)}`} onClose={onClose} width={560}>
+    <Modal title={`登錄統一發票・${vendorName}・${storeName}・${monthLabel(form.period)}`} onClose={onClose} width={560}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
         <Field label="本月叫貨總額（系統彙整，唯讀）"><input className="pl-input" value={fmt(ordersTotal)} disabled /></Field>
         <Field label="發票號碼" required><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} placeholder="AB-12345678" /></Field>
@@ -6258,6 +6268,22 @@ function App() {
         );
         ["官網收入", "勤美設備出租收入"].forEach((name) => {
           stored.incomeCategories = ensureCategory(stored.incomeCategories, name);
+        });
+        /* 月結對帳改成依「廠商＋門店」分別建立應付帳款／統一發票（原本是整個廠商合併一張，
+           不分門店）。既有的舊資料沒有 storeId，這裡幫忙補上：找出該廠商當月實際叫貨金額
+           最大的門店，指派過去（多數情況下廠商當月其實只服務單一門店，這樣補的結果就會是
+           對的；真的橫跨多門店的少數情況，補完之後使用者仍可自行到月結對帳頁面編輯調整）。 */
+        if (!stored.payables) stored.payables = [];
+        stored.payables = stored.payables.map((p) => {
+          if (p.storeId) return p;
+          const relatedOrders = (stored.orders || []).filter((o) => o.billing === "月結" && o.vendorId === p.vendorId && monthOf(o.date) === p.period);
+          const byStore = {};
+          relatedOrders.forEach((o) => {
+            const sid = acctStoreId(stored.stores, o.storeId);
+            byStore[sid] = (byStore[sid] || 0) + num(o.amount);
+          });
+          const dominant = Object.entries(byStore).sort((a, b) => b[1] - a[1])[0];
+          return { ...p, storeId: dominant ? dominant[0] : (stored.stores.find((s) => !s.parentId)?.id || "") };
         });
         /* 保險機制：如果先前曾經因為登入當下沒有立刻存回資料庫，導致不同時間點各自新增出
            「名稱相同、id 不同」的重複類別，這裡做一次性去重──同名只留最早那個，其餘類別
