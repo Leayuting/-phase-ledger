@@ -442,6 +442,18 @@ function Field({ label, required, children, span }) {
   );
 }
 
+/* 全站統一的日期欄位：一律用瀏覽器原生日曆選擇器（type="date"），不再開放手動輸入文字日期，
+   避免打錯格式或打出「6/31」這種當月不存在的日期（曾經因此讓某個月的統計多算了一筆）。
+   對外仍是系統慣用的「YYYY/MM/DD」字串格式，onChange 沿用跟一般文字欄位一樣的 (e) => ... 慣例
+   （e.target.value 就是 YYYY/MM/DD 字串），呼叫端不用改既有的 set("date") 這類 handler。 */
+function DateInput({ value, onChange, disabled, style }) {
+  return (
+    <input type="date" className="pl-input" style={style} disabled={disabled}
+      value={value ? value.replace(/\//g, "-") : ""}
+      onChange={(e) => onChange({ target: { value: e.target.value ? e.target.value.replace(/-/g, "/") : "" } })} />
+  );
+}
+
 function Modal({ title, onClose, children, width = 720 }) {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -1430,7 +1442,7 @@ function SalesForm({ form, setForm, stores, onSave, onClose, locked, adminEditLo
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
-        <Field label="營業日期" required><input className="pl-input" value={form.date} onChange={set("date")} placeholder="YYYY/MM/DD" disabled={locked} /></Field>
+        <Field label="營業日期" required><DateInput value={form.date} onChange={set("date")} disabled={locked} /></Field>
         <Field label="門店" required>
           <select className="pl-input" value={form.storeId} onChange={set("storeId")} disabled={locked}>
             <option value="">選擇門店</option>
@@ -1554,7 +1566,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
     <Modal title="批次新增支出" onClose={onClose} width={980}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end", marginBottom: 14 }}>
         <Field label="支出日期（本批共用）" required>
-          <input className="pl-input" style={{ width: 130 }} value={date} onChange={(e) => setDate(e.target.value)} placeholder="YYYY/MM/DD" />
+          <DateInput style={{ width: 150 }} value={date} onChange={(e) => setDate(e.target.value)} />
         </Field>
         <Field label="門店"><input className="pl-input" style={{ width: 110 }} value={nameOf(curStore)} disabled /></Field>
         <div style={{ marginLeft: "auto", fontSize: 13.5, color: T.sub, paddingBottom: 8 }}>
@@ -1656,7 +1668,7 @@ function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit }) {
     <Modal title="批次新增叫貨" onClose={onClose} width={900}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end", marginBottom: 14 }}>
         <Field label="叫貨日期（本批共用）" required>
-          <input className="pl-input" style={{ width: 130 }} value={date} onChange={(e) => setDate(e.target.value)} placeholder="YYYY/MM/DD" />
+          <DateInput style={{ width: 150 }} value={date} onChange={(e) => setDate(e.target.value)} />
         </Field>
         <Field label="門店"><input className="pl-input" style={{ width: 110 }} value={nameOf(curStore)} disabled /></Field>
         <div style={{ marginLeft: "auto", fontSize: 13.5, color: T.sub, paddingBottom: 8 }}>
@@ -1688,7 +1700,7 @@ function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit }) {
                 </td>
                 <td style={{ minWidth: 115 }}>
                   {r.billing === "月結"
-                    ? <input className="pl-input" value={r.dueDate} onChange={(e) => setRow(r.key, "dueDate", e.target.value)} placeholder="YYYY/MM/DD" />
+                    ? <DateInput value={r.dueDate} onChange={(e) => setRow(r.key, "dueDate", e.target.value)} />
                     : <span style={{ color: T.sub, fontSize: 12.5 }}>現結・當日付清</span>}
                 </td>
                 {r.billing === "現結"
@@ -2190,7 +2202,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
       {editing && (
         <Modal title={editing.id ? "收入明細" : "新增收入"} onClose={() => setEditing(null)} width={680}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-            <Field label="收入日期" required><input className="pl-input" value={editing.date} onChange={(e) => setEditing({ ...editing, date: e.target.value })} placeholder="YYYY/MM/DD" /></Field>
+            <Field label="收入日期" required><DateInput value={editing.date} onChange={(e) => setEditing({ ...editing, date: e.target.value })} /></Field>
             <Field label="門店"><input className="pl-input" value={nameOf(editing.storeId)} disabled /></Field>
             <Field label="收入類別" required>
               <select className="pl-input" value={editing.categoryId} onChange={(e) => setEditing({ ...editing, categoryId: e.target.value })}>
@@ -2337,7 +2349,7 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-        <Field label="支出日期" required><input className="pl-input" value={form.date} onChange={set("date")} placeholder="YYYY/MM/DD" disabled={locked} /></Field>
+        <Field label="支出日期" required><DateInput value={form.date} onChange={set("date")} disabled={locked} /></Field>
         <Field label="門店／部門" required>
           <select className="pl-input" value={form.storeId} onChange={set("storeId")} disabled={locked}>
             <option value="">選擇</option>{stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -2374,7 +2386,7 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
                 <input type="checkbox" checked={form.isReimbursed} onChange={set("isReimbursed")} disabled={locked} /> 是
               </label>
             </Field>
-            {form.isReimbursed && <Field label="核銷日期"><input className="pl-input" value={form.reimburseDate} onChange={set("reimburseDate")} placeholder="YYYY/MM/DD" disabled={locked} /></Field>}
+            {form.isReimbursed && <Field label="核銷日期"><DateInput value={form.reimburseDate} onChange={set("reimburseDate")} disabled={locked} /></Field>}
           </>
         )}
         <DocumentField docType={form.docType} noDocReason={form.noDocReason} attachment={form.attachment}
@@ -2911,7 +2923,7 @@ function PayableInvoiceForm({ form, setForm, vendorName, storeName, ordersTotal,
         <Field label="本月叫貨總額（系統彙整，唯讀）"><input className="pl-input" value={fmt(ordersTotal)} disabled /></Field>
         <Field label="發票號碼" required><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} placeholder="AB-12345678" /></Field>
         <Field label="發票金額" required><input className="pl-input" inputMode="decimal" value={form.invoiceAmount} onChange={set("invoiceAmount")} /></Field>
-        <Field label="發票日期" required><input className="pl-input" value={form.invoiceDate} onChange={set("invoiceDate")} placeholder="YYYY/MM/DD" /></Field>
+        <Field label="發票日期" required><DateInput value={form.invoiceDate} onChange={set("invoiceDate")} /></Field>
         <Field label="發票附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
       </div>
       {form.invoiceAmount !== "" && diff !== 0 && (
@@ -2935,7 +2947,7 @@ function OrderForm({ form, setForm, data, stores, onSave, onClose }) {
   return (
     <Modal title={form.id ? "叫貨明細" : "新增叫貨"} onClose={onClose} width={760}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-        <Field label="叫貨日期" required><input className="pl-input" value={form.date} onChange={set("date")} placeholder="YYYY/MM/DD" /></Field>
+        <Field label="叫貨日期" required><DateInput value={form.date} onChange={set("date")} /></Field>
         <Field label="使用門店" required>
           <select className="pl-input" value={form.storeId} onChange={set("storeId")}>
             <option value="">選擇</option>{stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -2953,8 +2965,8 @@ function OrderForm({ form, setForm, data, stores, onSave, onClose }) {
             {ORDER_BILLING.map((b) => <option key={b}>{b}</option>)}
           </select>
         </Field>
-        <Field label="預計付款日" required={form.billing === "月結"}><input className="pl-input" value={form.dueDate} onChange={set("dueDate")} placeholder="YYYY/MM/DD" /></Field>
-        <Field label="實際付款日"><input className="pl-input" value={form.paidDate} onChange={set("paidDate")} placeholder="YYYY/MM/DD" /></Field>
+        <Field label="預計付款日" required={form.billing === "月結"}><DateInput value={form.dueDate} onChange={set("dueDate")} /></Field>
+        <Field label="實際付款日"><DateInput value={form.paidDate} onChange={set("paidDate")} /></Field>
         <Field label="付款狀態">
           <select className="pl-input" value={form.payStatus} onChange={set("payStatus")}>
             {ORDER_PAY_STATUS.map((s) => <option key={s}>{s}</option>)}
@@ -3121,15 +3133,15 @@ function ARForm({ form, setForm, onSave, onClose }) {
   return (
     <Modal title={form.id ? `應收帳款 ${form.no || ""}` : "新增應收帳款"} onClose={onClose} width={760}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-        <Field label="建立日期" required><input className="pl-input" value={form.date} onChange={set("date")} placeholder="YYYY/MM/DD" /></Field>
+        <Field label="建立日期" required><DateInput value={form.date} onChange={set("date")} /></Field>
         <Field label="客戶或公司名稱" required span={2}><input className="pl-input" value={form.customer} onChange={set("customer")} /></Field>
         <Field label="發票號碼"><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
         <Field label="請款金額" required><input className="pl-input" inputMode="decimal" value={form.amount} onChange={set("amount")} /></Field>
         <Field label="請款人"><input className="pl-input" value={form.requester} onChange={set("requester")} /></Field>
-        <Field label="請款日期"><input className="pl-input" value={form.requestDate} onChange={set("requestDate")} placeholder="YYYY/MM/DD" /></Field>
-        <Field label="到期日"><input className="pl-input" value={form.dueDate} onChange={set("dueDate")} placeholder="YYYY/MM/DD" /></Field>
+        <Field label="請款日期"><DateInput value={form.requestDate} onChange={set("requestDate")} /></Field>
+        <Field label="到期日"><DateInput value={form.dueDate} onChange={set("dueDate")} /></Field>
         <Field label="已收金額"><input className="pl-input" inputMode="decimal" value={form.received} onChange={set("received")} placeholder="0" /></Field>
-        <Field label="實際收款日"><input className="pl-input" value={form.receivedDate} onChange={set("receivedDate")} placeholder="YYYY/MM/DD" /></Field>
+        <Field label="實際收款日"><DateInput value={form.receivedDate} onChange={set("receivedDate")} /></Field>
         <Field label="收款狀態">
           <select className="pl-input" value={form.status} onChange={set("status")}>
             {AR_STATUS.map((s) => <option key={s}>{s}</option>)}
@@ -4679,8 +4691,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {perm.isAcct(user) && <button className="pl-btn" onClick={() => goto("import")}>⬆ Excel 匯入</button>}
           <button className="pl-btn small" onClick={() => setDate(dayShift(date, -1))}>‹</button>
-          <input className="pl-input" style={{ width: 120, textAlign: "center" }} value={date}
-            onChange={(e) => setDate(e.target.value)} placeholder="YYYY/MM/DD" />
+          <DateInput style={{ width: 150, textAlign: "center" }} value={date} onChange={(e) => setDate(e.target.value)} />
           <button className="pl-btn small" onClick={() => setDate(dayShift(date, 1))}>›</button>
           {date !== todayStr() && <button className="pl-btn small" onClick={() => setDate(todayStr())}>今天</button>}
         </div>
@@ -4877,7 +4888,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                   </td>
                   <td style={{ minWidth: 110 }}>
                     {r.billing === "月結"
-                      ? <input className="pl-input" placeholder="YYYY/MM/DD" value={r.dueDate} onChange={(e) => setOrdRow(r.key, "dueDate", e.target.value)} />
+                      ? <DateInput value={r.dueDate} onChange={(e) => setOrdRow(r.key, "dueDate", e.target.value)} />
                       : <span style={{ color: T.sub, fontSize: 12.5 }}>現結・當日付清</span>}
                   </td>
                   {r.billing === "月結"
@@ -5636,9 +5647,9 @@ function ExportTab({ data, user, profiles }) {
         </div>
         {rangeMode === "range" ? (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input className="pl-input" style={{ width: 130 }} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} placeholder="YYYY/MM/DD" />
+            <DateInput style={{ width: 150 }} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
             <span style={{ color: T.sub }}>～</span>
-            <input className="pl-input" style={{ width: 130 }} value={dateTo} onChange={(e) => setDateTo(e.target.value)} placeholder="YYYY/MM/DD" />
+            <DateInput style={{ width: 150 }} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
             <span style={{ fontSize: 12, color: T.sub }}>留空代表不限起／迄日</span>
           </div>
         ) : (
