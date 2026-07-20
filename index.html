@@ -724,16 +724,27 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   /* 廠商叫貨：月結廠商若有未取消的發票調整（只在「全部門店」時套用，發票沒有拆分門店），
      採發票／請款金額；否則沿用原始叫貨累計金額 */
   const { total: ordSum, cashOrdM: ordCashRecs, adjustments: ordAdjustments } = adjustedOrderSum(data, month, storeFilter);
-  const ordSumRows = [
-    ...ordCashRecs.map((o) => ({ date: o.date, store: nameOf(o.storeId), item: `${data.vendors.find((v) => v.id === o.vendorId)?.name || "—"}（現結）｜${o.items}`, amount: num(o.amount) })),
-    ...ordAdjustments.flatMap((a) => {
-      const vName = data.vendors.find((v) => v.id === a.vendorId)?.name || "—";
-      if (a.payable) {
-        return [{ date: "", store: "", item: `${vName}（月結・已依發票調整，原始叫貨 ${fmt(a.rawSum)}，發票 ${a.payable.invoiceNo}）`, amount: a.invoiceAmount }];
-      }
-      return a.list.map((o) => ({ date: o.date, store: nameOf(o.storeId), item: `${vName}（月結）｜${o.items}`, amount: num(o.amount) }));
-    }),
-  ];
+  /* 廠商叫貨明細改以「廠商」彙總（不是逐筆每日叫貨紀錄），每個廠商一行，
+     顯示現結／月結各自小計與是否已套用發票調整，依總額排序 */
+  const ordVendorRows = (() => {
+    const byVendor = {};
+    ordCashRecs.forEach((o) => {
+      const v = byVendor[o.vendorId] || (byVendor[o.vendorId] = { cash: 0, monthly: 0, adjusted: false });
+      v.cash += num(o.amount);
+    });
+    ordAdjustments.forEach((a) => {
+      const v = byVendor[a.vendorId] || (byVendor[a.vendorId] = { cash: 0, monthly: 0, adjusted: false });
+      v.monthly += a.payable ? a.invoiceAmount : a.rawSum;
+      if (a.payable) v.adjusted = true;
+    });
+    return Object.entries(byVendor).map(([vid, v]) => {
+      const vName = data.vendors.find((x) => x.id === vid)?.name || "—";
+      const parts = [];
+      if (v.cash > 0) parts.push(`現結 ${fmt(v.cash)}`);
+      if (v.monthly > 0) parts.push(`月結 ${fmt(v.monthly)}${v.adjusted ? "（已依發票調整）" : ""}`);
+      return { item: `${vName}${parts.length ? "｜" + parts.join("、") : ""}`, amount: v.cash + v.monthly };
+    }).sort((a, b) => b.amount - a.amount);
+  })();
 
   /* 收入拆分：官網收入／勤美設備出租收入為獨立類別，其餘收入類別一律歸入「其他收入」 */
   const onlineIncCatId = (data.incomeCategories || []).find((c) => c.name === "官網收入")?.id;
@@ -900,7 +911,7 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
 
       <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5, margin: "4px 0 10px" }}>支出</div>
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 20 }}>
-        <KPI label="廠商叫貨" value={fmt(ordSum)} sub={storeFilter ? undefined : "月結廠商已套用發票調整"} onClick={() => openDetail("廠商叫貨明細", ordSumRows)} />
+        <KPI label="廠商叫貨" value={fmt(ordSum)} sub={storeFilter ? undefined : "月結廠商已套用發票調整"} onClick={() => openDetail("廠商叫貨明細（依廠商彙總）", ordVendorRows)} />
         <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細（按日彙總）", rowsByDate(dailyExpRecs))} />
         <KPI label="營業稅" value={fmt(bizTax)} onClick={() => openDetail("營業稅明細", rowsFromExp(taxRecs))} />
         <KPI label="租金" value={fmt(rentTotal)} sub="點擊看119號/121號/烘豆場明細" onClick={() => openDetail("租金明細（119號／121號／烘豆場）", [
