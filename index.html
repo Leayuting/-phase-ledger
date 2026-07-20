@@ -761,19 +761,22 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
   const incM = (data.incomes || []).filter((r) => inMonth(r) && r.status !== "已退回");
 
   const revenue = salesM.reduce((a, s) => a + calcSales(s).net, 0);
-  /* 現金收入（推算）：預設由本月日結資料加總計算；若該月（僅限「全部門店」檢視）有手動
-     調整值（早期匯入的完整帳表，計算口徑跟系統不同，直接以人工核對後的正確金額為準），
-     則優先採用手動調整值，不受後續日結資料異動影響 */
-  const cashOverride = !storeFilter ? (data.cashIncomeOverrides || {})[month] : undefined;
+  /* 現金收入（推算）：預設由本月日結資料加總計算；若該月＋該門店篩選（全部門店或個別門店，
+     各自獨立）有手動調整值（早期匯入的完整帳表，計算口徑跟系統不同，直接以人工核對後的
+     正確金額為準），則優先採用手動調整值，不受後續日結資料異動影響 */
+  const cashScopeKey = storeFilter || "all";
+  const cashOverride = (data.cashIncomeOverrides || {})[month]?.[cashScopeKey];
   const cashComputed = salesM.reduce((a, s) => a + calcSales(s).cash, 0);
   const cashSum = cashOverride !== undefined ? cashOverride : cashComputed;
-  const canEditCashOverride = !storeFilter && (perm.isAdmin(user) || perm.isAcct(user));
+  const canEditCashOverride = perm.isAdmin(user) || perm.isAcct(user);
   const [editingCash, setEditingCash] = useState(null); // { value }
   const saveCashOverride = () => {
     const v = editingCash.value.trim();
     update((d) => {
       const next = { ...(d.cashIncomeOverrides || {}) };
-      if (v === "") delete next[month]; else next[month] = num(v);
+      const forMonth = { ...(next[month] || {}) };
+      if (v === "") delete forMonth[cashScopeKey]; else forMonth[cashScopeKey] = num(v);
+      next[month] = forMonth;
       return { ...d, cashIncomeOverrides: next };
     });
     setEditingCash(null);
@@ -1138,10 +1141,11 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
       {detail && <KpiDetailModal title={detail.title} rows={detail.rows} onClose={() => setDetail(null)} />}
 
       {editingCash && (
-        <Modal title={`手動調整現金收入（推算）－${monthLabel(month)}`} onClose={() => setEditingCash(null)} width={440}>
+        <Modal title={`手動調整現金收入（推算）－${monthLabel(month)}・${storeFilter ? nameOf(storeFilter) : "全部門店"}`} onClose={() => setEditingCash(null)} width={440}>
           <div style={{ fontSize: 13, color: T.sub, marginBottom: 10 }}>
             系統預設值：{fmt(cashComputed)}。若該月帳務資料來源（如匯入的完整帳表）計算口徑跟系統不同，可在此填入正確金額，
             將優先顯示此手動調整值，不受後續日結資料異動影響；清空欄位並儲存可還原為系統自動計算。
+            此調整值僅套用於目前的門店篩選範圍（{storeFilter ? nameOf(storeFilter) : "全部門店"}），與其他門店篩選各自獨立。
           </div>
           <Field label="手動調整金額（留空＝還原自動計算）">
             <input className="pl-input" inputMode="decimal" value={editingCash.value} onChange={(e) => setEditingCash({ value: e.target.value })} placeholder={String(cashComputed)} autoFocus />
@@ -6769,10 +6773,12 @@ function App() {
           };
         });
         /* 2026/06 匯入時已是完整帳表，計算口徑跟系統的「現金收入（推算）」不同，
-           人工核對後金額應為 861823，設為手動調整值（一次性設定，之後可於營運總覽
-           點擊該卡片自行修改或還原） */
+           人工核對後金額應為 861823，「全部門店」與「中山店」皆設為手動調整值（一次性
+           設定，之後可於營運總覽點擊該卡片自行修改或還原） */
         if (!stored.cashIncomeOverrides) stored.cashIncomeOverrides = {};
-        if (stored.cashIncomeOverrides["2026/06"] === undefined) stored.cashIncomeOverrides["2026/06"] = 861823;
+        if (!stored.cashIncomeOverrides["2026/06"]) stored.cashIncomeOverrides["2026/06"] = {};
+        if (stored.cashIncomeOverrides["2026/06"].all === undefined) stored.cashIncomeOverrides["2026/06"].all = 861823;
+        if (stored.cashIncomeOverrides["2026/06"].st1 === undefined) stored.cashIncomeOverrides["2026/06"].st1 = 861823;
         delete stored.users; delete stored.currentUserId; // 舊資料殘留欄位，使用者現改由 profiles 提供
         setData(stored);
         /* 上面這些都是登入當下對資料做的搬遷／補值（新類別、改名、去重……），一定要立刻存回
