@@ -6773,12 +6773,13 @@ function App() {
           };
         });
         /* 2026/06 匯入時已是完整帳表，計算口徑跟系統的「現金收入（推算）」不同，
-           人工核對後金額應為 861823，「全部門店」與「中山店」皆設為手動調整值（一次性
-           設定，之後可於營運總覽點擊該卡片自行修改或還原） */
+           861823 這個人工核對後的金額實際上是「中山店」的數字，不是全部門店合計，
+           只設定中山店的手動調整值（之後可於營運總覽點擊該卡片自行修改或還原） */
         if (!stored.cashIncomeOverrides) stored.cashIncomeOverrides = {};
         if (!stored.cashIncomeOverrides["2026/06"]) stored.cashIncomeOverrides["2026/06"] = {};
-        if (stored.cashIncomeOverrides["2026/06"].all === undefined) stored.cashIncomeOverrides["2026/06"].all = 861823;
         if (stored.cashIncomeOverrides["2026/06"].st1 === undefined) stored.cashIncomeOverrides["2026/06"].st1 = 861823;
+        /* 修正：先前誤把 861823 也設成「全部門店」的調整值，這裡移除，讓全部門店恢復自動加總計算 */
+        if (stored.cashIncomeOverrides["2026/06"].all === 861823) delete stored.cashIncomeOverrides["2026/06"].all;
         delete stored.users; delete stored.currentUserId; // 舊資料殘留欄位，使用者現改由 profiles 提供
         setData(stored);
         /* 上面這些都是登入當下對資料做的搬遷／補值（新類別、改名、去重……），一定要立刻存回
