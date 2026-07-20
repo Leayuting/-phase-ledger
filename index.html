@@ -6536,11 +6536,7 @@ function DedupeTab({ data, update, user }) {
 
   const toggle = (key) => setSelected((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
-  const deleteSelected = () => {
-    if (selected.size === 0) return;
-    if (!confirm(`確定刪除選取的 ${selected.size} 筆重複資料？此動作無法復原。`)) return;
-    const byTable = { dailySales: new Set(), expenses: new Set(), incomes: new Set(), orders: new Set() };
-    selected.forEach((key) => { const [table, id] = key.split("::"); byTable[table].add(id); });
+  const deleteByTableIds = (byTable) => {
     update((d) => ({
       ...d,
       dailySales: d.dailySales.filter((r) => !byTable.dailySales.has(r.id)),
@@ -6548,6 +6544,28 @@ function DedupeTab({ data, update, user }) {
       incomes: (d.incomes || []).filter((r) => !byTable.incomes.has(r.id)),
       orders: d.orders.filter((r) => !byTable.orders.has(r.id)),
     }));
+  };
+
+  const deleteSelected = () => {
+    if (selected.size === 0) return;
+    if (!confirm(`確定刪除選取的 ${selected.size} 筆重複資料？此動作無法復原。`)) return;
+    const byTable = { dailySales: new Set(), expenses: new Set(), incomes: new Set(), orders: new Set() };
+    selected.forEach((key) => { const [table, id] = key.split("::"); byTable[table].add(id); });
+    deleteByTableIds(byTable);
+    setSelected(new Set());
+  };
+
+  /* 每組保留最早建立的第一筆，其餘（畫面上標示「建議刪除」的）一次全部刪除，
+     不用逐筆勾選；仍會先跳出確認視窗告知實際筆數，避免手滑 */
+  const suggestedByTable = { dailySales: new Set(), expenses: new Set(), incomes: new Set(), orders: new Set() };
+  [["dailySales", dupSales], ["expenses", dupExp], ["incomes", dupInc], ["orders", dupOrd]].forEach(([table, groups]) => {
+    groups.forEach((g) => g.slice(1).forEach((r) => suggestedByTable[table].add(r.id)));
+  });
+  const suggestedCount = Object.values(suggestedByTable).reduce((a, s) => a + s.size, 0);
+  const deleteAllSuggested = () => {
+    if (suggestedCount === 0) return;
+    if (!confirm(`確定刪除全部「建議刪除」的 ${suggestedCount} 筆重複資料（每組保留最早建立的一筆）？此動作無法復原。`)) return;
+    deleteByTableIds(suggestedByTable);
     setSelected(new Set());
   };
 
@@ -6556,10 +6574,13 @@ function DedupeTab({ data, update, user }) {
       <div className="pl-card" style={{ padding: 12, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <MonthPicker value={month} onChange={setMonth} />
         <span style={{ fontSize: 13, color: T.sub }}>
-          {totalGroups === 0 ? "本月未發現疑似重複的資料" : `本月發現 ${totalGroups} 組疑似重複資料，勾選要刪除的項目（建議每組保留一筆）`}
+          {totalGroups === 0 ? "本月未發現疑似重複的資料" : `本月發現 ${totalGroups} 組疑似重複資料，勾選要刪除的項目（建議每組保留一筆），或直接一鍵刪除全部建議項目`}
         </span>
+        {suggestedCount > 0 && (
+          <button className="pl-btn danger small" style={{ marginLeft: "auto" }} onClick={deleteAllSuggested}>一鍵刪除全部建議刪除項目（{suggestedCount}）</button>
+        )}
         {selected.size > 0 && (
-          <button className="pl-btn danger small" style={{ marginLeft: "auto" }} onClick={deleteSelected}>刪除選取（{selected.size}）</button>
+          <button className="pl-btn danger small" onClick={deleteSelected}>刪除勾選項目（{selected.size}）</button>
         )}
       </div>
       {dupSales.length > 0 && (
