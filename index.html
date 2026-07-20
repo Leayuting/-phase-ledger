@@ -135,7 +135,16 @@ const fmtN = (n) => (n === null || n === undefined || isNaN(n) ? "—" : Math.ro
 const num = (v) => { const x = parseFloat(String(v).replace(/,/g, "")); return isNaN(x) ? 0 : x; };
 let _uid = Date.now() % 100000;
 const uid = (p = "id") => p + "_" + (++_uid).toString(36) + Math.random().toString(36).slice(2, 6);
-const validDate = (s) => /^\d{4}\/\d{2}\/\d{2}$/.test(s) && !isNaN(new Date(s.replace(/\//g, "-")).getTime());
+/* 驗證日期字串：不能只看 new Date() 有沒有回傳合法時間，因為 JS 對「6/31」這種超出當月天數的
+   日期不會報錯，而是自動往後推成「7/1」，導致像「2026/06/31」這種其實不存在的日期被誤判為合法，
+   混進當月的統計裡（實際發生過：一筆打錯的支出日期讓當月「每日支出」金額多算了）。
+   這裡額外檢查組出來的年/月/日跟輸入的是否完全一致，才能真的擋掉超出當月天數的日期。 */
+const validDate = (s) => {
+  if (!/^\d{4}\/\d{2}\/\d{2}$/.test(s)) return false;
+  const [y, mo, d] = s.split("/").map(Number);
+  const dt = new Date(y, mo - 1, d);
+  return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d;
+};
 const cmpDate = (a, b) => a.localeCompare(b);
 const monthLabel = (m) => m ? m.replace("/", " 年 ") + " 月" : "";
 const dateLabel = (d) => { const [y, m, day] = (d || "").split("/"); return y && m && day ? `${y} 年 ${m} 月 ${day} 日` : ""; };
