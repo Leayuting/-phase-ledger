@@ -2668,11 +2668,17 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
   const [cancelling, setCancelling] = useState(null); // { payable, rawSum, reason }
   const today = todayStr();
   const userName = (id) => (users || []).find((u) => u.id === id)?.name || "—";
+  const acctOf = (sid) => acctStoreId(data.stores, sid);
+
+  /* 月結對帳也比照「叫貨紀錄」用門店分頁呈現，點選門店才顯示該門店的對帳資料 */
+  const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
+  const topStores = stores.filter((s) => !s.parentId);
+  const [storeTab, setStoreTab] = usePersisted("pl_settle_storeTab", "");
+  const curStore = topStores.some((s) => s.id === storeTab) ? storeTab : (topStores[0]?.id || "");
 
   const monthly = data.orders.filter((o) =>
-    o.billing === "月結" && monthOf(o.date) === settleMonth && (!scope || scope.includes(o.storeId))
+    o.billing === "月結" && monthOf(o.date) === settleMonth && (!scope || scope.includes(o.storeId)) && acctOf(o.storeId) === curStore
   );
-  const acctOf = (sid) => acctStoreId(data.stores, sid);
 
   /* 依「廠商＋門店」彙整；每組（廠商＋門店＋月份）對應唯一一筆應付帳款／統一發票——
      廠商如果同一個月同時服務多間門店，會拆成多筆各自登錄發票、各自對帳、各自確認匯款，
@@ -2762,15 +2768,17 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
         <span style={{ fontSize: 13, color: T.sub }}>結帳月份（貨款月）</span>
         <MonthPicker value={settleMonth} onChange={setSettleMonth} />
         <div style={{ marginLeft: "auto", display: "flex", gap: 18, fontSize: 13 }}>
-          <span style={{ color: T.sub }}>月結總額 <b style={{ color: T.ink }}>{fmt(totalAll)}</b></span>
+          <span style={{ color: T.sub }}>{nameOf(curStore)}月結總額 <b style={{ color: T.ink }}>{fmt(totalAll)}</b></span>
           <span style={{ color: T.sub }}>待匯款 <b style={{ color: totalUnpaid > 0 ? T.red : T.green }}>{fmt(totalUnpaid)}</b></span>
         </div>
       </div>
 
+      <StoreTabs stores={topStores} value={curStore} onChange={setStoreTab} />
+
       <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 10 }}>
-        彙整 {monthLabel(settleMonth)}各廠商・門店月結叫貨。每個廠商在每間門店各自一個月開立一張統一發票，
-        不需要每筆叫貨都個別綁發票——叫貨明細先按廠商＋門店歸屬在這裡，等廠商開立發票後，於該筆登錄發票號碼／
-        金額／附件即可，系統會自動核對發票金額跟該門店的叫貨總額；同一廠商如果同時服務多間門店，會分開列成多筆、各自對帳。
+        彙整 {nameOf(curStore)}・{monthLabel(settleMonth)}各廠商月結叫貨。每個廠商在每間門店各自一個月開立一張統一發票，
+        不需要每筆叫貨都個別綁發票——叫貨明細先歸屬在這裡，等廠商開立發票後，於該筆登錄發票號碼／
+        金額／附件即可，系統會自動核對發票金額跟該門店的叫貨總額；同一廠商如果同時服務多間門店，切到不同門店分頁會分開對帳。
       </div>
 
       {groups.length === 0 && <div className="pl-card" style={{ padding: 24 }}><Empty text="此月份沒有月結叫貨紀錄" /></div>}
@@ -2781,7 +2789,7 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
         <div key={groupKey} className="pl-card" style={{ marginBottom: 12, overflow: "hidden" }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, padding: "13px 16px", cursor: "pointer" }}
             onClick={() => setOpen(open === groupKey ? null : groupKey)}>
-            <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 160 }}>{venOf(g.vid)}・{nameOf(g.storeId)}</div>
+            <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 120 }}>{venOf(g.vid)}</div>
             <div style={{ fontSize: 13, color: T.sub }}>{g.list.length} 筆</div>
             <div>
               <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
