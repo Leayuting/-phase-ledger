@@ -6508,12 +6508,109 @@ function RestoreTab({ data, update, user, profiles, presetBackup }) {
 }
 
 /* ── 匯出備份中心：主元件，掛在 NAV「匯出備份」分頁 ── */
+/* 重複資料檢查：同一門店同一天出現多筆條件完全相同的支出／收入／叫貨，或同一門店
+   同一天出現多筆日結，多半是同一份 Excel 被重複匯入造成的。每組依建立時間排序，
+   系統只建議（不自動刪除），管理者勾選要刪除的項目後手動確認，避免誤刪真的巧合相同的資料。 */
+function DedupeTab({ data, update, user }) {
+  const [month, setMonth] = usePersisted("pl_dedupe_month", monthOf(todayStr()));
+  const [selected, setSelected] = useState(new Set()); // "table::id"
+  const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
+  const catOf = (id) => data.categories.find((c) => c.id === id)?.name || "—";
+  const incCatOf = (id) => (data.incomeCategories || []).find((c) => c.id === id)?.name || "—";
+  const venOf = (id) => data.vendors.find((v) => v.id === id)?.name || "—";
+  const inMonth = (r) => monthOf(r.date) === month;
+
+  const groupDup = (list, keyFn) => {
+    const groups = {};
+    list.forEach((r) => { const k = keyFn(r); (groups[k] = groups[k] || []).push(r); });
+    return Object.values(groups)
+      .filter((g) => g.length > 1)
+      .map((g) => [...g].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")));
+  };
+
+  const dupSales = groupDup(data.dailySales.filter(inMonth), (r) => `${r.date}|${r.storeId}`);
+  const dupExp = groupDup(data.expenses.filter(inMonth), (r) => `${r.date}|${r.storeId}|${r.categoryId}|${r.item}|${num(r.amount)}|${r.payMethod}`);
+  const dupInc = groupDup((data.incomes || []).filter(inMonth), (r) => `${r.date}|${r.storeId}|${r.categoryId}|${r.item}|${num(r.amount)}|${r.payMethod}`);
+  const dupOrd = groupDup(data.orders.filter(inMonth), (r) => `${r.date}|${r.storeId}|${r.vendorId}|${num(r.amount)}|${r.billing}`);
+  const totalGroups = dupSales.length + dupExp.length + dupInc.length + dupOrd.length;
+
+  const toggle = (key) => setSelected((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
+  const deleteSelected = () => {
+    if (selected.size === 0) return;
+    if (!confirm(`確定刪除選取的 ${selected.size} 筆重複資料？此動作無法復原。`)) return;
+    const byTable = { dailySales: new Set(), expenses: new Set(), incomes: new Set(), orders: new Set() };
+    selected.forEach((key) => { const [table, id] = key.split("::"); byTable[table].add(id); });
+    update((d) => ({
+      ...d,
+      dailySales: d.dailySales.filter((r) => !byTable.dailySales.has(r.id)),
+      expenses: d.expenses.filter((r) => !byTable.expenses.has(r.id)),
+      incomes: (d.incomes || []).filter((r) => !byTable.incomes.has(r.id)),
+      orders: d.orders.filter((r) => !byTable.orders.has(r.id)),
+    }));
+    setSelected(new Set());
+  };
+
+  return (
+    <div>
+      <div className="pl-card" style={{ padding: 12, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <MonthPicker value={month} onChange={setMonth} />
+        <span style={{ fontSize: 13, color: T.sub }}>
+          {totalGroups === 0 ? "本月未發現疑似重複的資料" : `本月發現 ${totalGroups} 組疑似重複資料，勾選要刪除的項目（建議每組保留一筆）`}
+        </span>
+        {selected.size > 0 && (
+          <button className="pl-btn danger small" style={{ marginLeft: "auto" }} onClick={deleteSelected}>刪除選取（{selected.size}）</button>
+        )}
+      </div>
+      {dupSales.length > 0 && (
+        <DupGroup title="每日營收" groups={dupSales} table="dailySales" selected={selected} toggle={toggle}
+          renderRow={(r) => `${r.date}・${nameOf(r.storeId)}・營業額 ${fmtN(r.pos)}・狀態 ${r.status}・建立 ${r.createdAt || "—"}`} />
+      )}
+      {dupExp.length > 0 && (
+        <DupGroup title="每日支出" groups={dupExp} table="expenses" selected={selected} toggle={toggle}
+          renderRow={(r) => `${r.date}・${nameOf(r.storeId)}・${catOf(r.categoryId)}・${r.item}・${fmtN(r.amount)}・狀態 ${r.status}・建立 ${r.createdAt || "—"}`} />
+      )}
+      {dupInc.length > 0 && (
+        <DupGroup title="門店收入" groups={dupInc} table="incomes" selected={selected} toggle={toggle}
+          renderRow={(r) => `${r.date}・${nameOf(r.storeId)}・${incCatOf(r.categoryId)}・${r.item}・${fmtN(r.amount)}・狀態 ${r.status}・建立 ${r.createdAt || "—"}`} />
+      )}
+      {dupOrd.length > 0 && (
+        <DupGroup title="廠商叫貨" groups={dupOrd} table="orders" selected={selected} toggle={toggle}
+          renderRow={(r) => `${r.date}・${nameOf(r.storeId)}・${venOf(r.vendorId)}・${fmtN(r.amount)}・${r.billing}${r.items ? "・" + r.items : ""}`} />
+      )}
+      {totalGroups === 0 && <Empty text="這個月各項資料都沒有偵測到重複紀錄，可以切換月份再檢查。" />}
+    </div>
+  );
+}
+
+function DupGroup({ title, groups, table, selected, toggle, renderRow }) {
+  return (
+    <div className="pl-card" style={{ padding: 14, marginBottom: 12 }}>
+      <div className="pl-serif" style={{ fontWeight: 700, marginBottom: 10 }}>{title}（{groups.length} 組）</div>
+      {groups.map((g, gi) => (
+        <div key={gi} style={{ marginBottom: 10, paddingBottom: 10, borderBottom: gi < groups.length - 1 ? `1px solid ${T.line}` : "none" }}>
+          {g.map((r, ri) => {
+            const key = `${table}::${r.id}`;
+            return (
+              <label key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "3px 0", cursor: "pointer" }}>
+                <input type="checkbox" checked={selected.has(key)} onChange={() => toggle(key)} />
+                <Badge text={ri === 0 ? "建議保留" : "建議刪除"} tone={ri === 0 ? "green" : "yellow"} />
+                <span>{renderRow(r)}</span>
+              </label>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ExportBackupModule({ data, update, user, profiles }) {
   const [tab, setTab] = useState("export");
   const [restorePreset, setRestorePreset] = useState(null);
   if (!perm.isAcct(user) && !perm.isMgr(user)) return <Empty text="匯出備份僅開放系統管理者、會計、店長使用。" />;
 
-  const tabs = [["export", "資料匯出"], ["backup", "備份管理"], ["restore", "還原"]];
+  const tabs = [["export", "資料匯出"], ["backup", "備份管理"], ["restore", "還原"], ["dedupe", "重複資料檢查"]];
   const gotoRestore = (b) => { setRestorePreset(b); setTab("restore"); };
 
   return (
@@ -6527,6 +6624,9 @@ function ExportBackupModule({ data, update, user, profiles }) {
       {tab === "export" && <ExportTab data={data} user={user} profiles={profiles} />}
       {tab === "backup" && <BackupTab data={data} user={user} profiles={profiles} onGotoRestore={gotoRestore} />}
       {tab === "restore" && <RestoreTab data={data} update={update} user={user} profiles={profiles} presetBackup={restorePreset} />}
+      {tab === "dedupe" && (perm.isAdmin(user) || perm.isAcct(user)
+        ? <DedupeTab data={data} update={update} user={user} />
+        : <Empty text="重複資料檢查僅開放系統管理者、會計使用。" />)}
     </div>
   );
 }
