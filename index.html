@@ -138,6 +138,7 @@ const uid = (p = "id") => p + "_" + (++_uid).toString(36) + Math.random().toStri
 const validDate = (s) => /^\d{4}\/\d{2}\/\d{2}$/.test(s) && !isNaN(new Date(s.replace(/\//g, "-")).getTime());
 const cmpDate = (a, b) => a.localeCompare(b);
 const monthLabel = (m) => m ? m.replace("/", " 年 ") + " 月" : "";
+const dateLabel = (d) => { const [y, m, day] = (d || "").split("/"); return y && m && day ? `${y} 年 ${m} 月 ${day} 日` : ""; };
 const prevMonth = (m) => {
   const [y, mo] = m.split("/").map(Number);
   const d = new Date(y, mo - 2, 1);
@@ -1139,7 +1140,7 @@ function StoreTabs({ stores, value, onChange }) {
    沒傳入的頁面「今天」跟「本月」行為相同（都跳回當月）。
    onPickDate：選填。日曆下拉選單選年/月/日時，除了跳到該月，同時把選到的
    那一天當成精確日期篩選傳出去；沒傳入的頁面下拉選單選日期只用來跳月份。 */
-function MonthPicker({ value, onChange, onToday, onPickDate }) {
+function MonthPicker({ value, onChange, onToday, onPickDate, exactDate }) {
   const [open, setOpen] = useState(false);
   /* 選好的日期先放在 draft（不會立刻套用），按「前往」才真的套用。
      這樣可以避開 <input type="date"> 的原生行為：如果選到的日期跟目前顯示的值一樣
@@ -1159,7 +1160,7 @@ function MonthPicker({ value, onChange, onToday, onPickDate }) {
     <div style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
       <button className="pl-btn small" onClick={() => onChange(monthShift(value, -1))} aria-label="上一月">‹</button>
       <button type="button" className="pl-btn small" style={{ minWidth: 118 }} onClick={openPicker}>
-        📅 {monthLabel(value)} ▾
+        📅 {exactDate ? dateLabel(exactDate) : monthLabel(value)} ▾
       </button>
       <button className="pl-btn small" onClick={() => onChange(monthShift(value, 1))} aria-label="下一月">›</button>
       <button className="pl-btn small" onClick={() => onChange(monthOf(todayStr()))}>本月</button>
@@ -1811,7 +1812,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
 
       {kind === "expense" && <>
       <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-        <MonthPicker value={flt.month} onChange={(m) => setFlt({ ...flt, month: m, date: "" })}
+        <MonthPicker value={flt.month} exactDate={flt.date} onChange={(m) => setFlt({ ...flt, month: m, date: "" })}
           onToday={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })}
           onPickDate={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })} />
         {flt.date && <button className="pl-btn small" onClick={() => setFlt({ ...flt, date: "" })}>清除日期</button>}
@@ -2427,7 +2428,7 @@ function OrderModule({ data, update, user, users, logAudit }) {
     <div>
       <SectionTitle right={
         <>
-          <MonthPicker value={month} onChange={(m) => { setMonth(m); setDateFlt(""); }}
+          <MonthPicker value={month} exactDate={dateFlt} onChange={(m) => { setMonth(m); setDateFlt(""); }}
             onToday={(d) => { setDateFlt(d); setMonth(monthOf(d)); }}
             onPickDate={(d) => { setDateFlt(d); setMonth(monthOf(d)); }} />
           {dateFlt && <button className="pl-btn small" onClick={() => setDateFlt("")}>清除日期</button>}
