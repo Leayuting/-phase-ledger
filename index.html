@@ -772,13 +772,16 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const payrollRecs = expByCat(payrollCatId);
   const sumAmt = (recs) => recs.reduce((a, e) => a + num(e.amount), 0);
   const rent119 = sumAmt(rent119Recs), rent121 = sumAmt(rent121Recs), rentRoast = sumAmt(rentRoastRecs);
+  /* 租金總額＝119號＋121號＋烘豆場加總，跟固定支出資料同步（三個子項目一有異動，這裡自動跟著變）；
+     營運總覽預設只顯示這個合併後的「租金」卡片，點擊才展開看三個子項目的明細 */
+  const rentTotal = rent119 + rent121 + rentRoast;
   const bizTax = sumAmt(taxRecs), elecFee = sumAmt(elecRecs), waterFee = sumAmt(waterRecs);
   const laborIns = sumAmt(laborInsRecs), pension = sumAmt(pensionRecs), healthIns = sumAmt(healthInsRecs), payroll = sumAmt(payrollRecs);
   const itemizedExpIds = new Set([rentCatId.n119, rentCatId.n121, rentCatId.roast, ...taxCatIds,
     elecCatId, waterCatId, laborInsCatId, pensionCatId, healthInsCatId, payrollCatId].filter(Boolean));
   const dailyExpRecs = expM.filter((e) => !itemizedExpIds.has(e.categoryId));
   const dailyExp = sumAmt(dailyExpRecs);
-  const totalExp = ordSum + dailyExp + bizTax + rent119 + rent121 + rentRoast + elecFee + waterFee + laborIns + pension + healthIns + payroll;
+  const totalExp = ordSum + dailyExp + bizTax + rentTotal + elecFee + waterFee + laborIns + pension + healthIns + payroll;
   const profit = totalInc - totalExp;
 
   const arUnpaid = data.receivables.filter((r) => r.status !== "呆帳").reduce((a, r) => a + Math.max(0, num(r.amount) - num(r.received)), 0);
@@ -900,9 +903,9 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
         <KPI label="廠商叫貨" value={fmt(ordSum)} sub={storeFilter ? undefined : "月結廠商已套用發票調整"} onClick={() => openDetail("廠商叫貨明細", ordSumRows)} />
         <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細（按日彙總）", rowsByDate(dailyExpRecs))} />
         <KPI label="營業稅" value={fmt(bizTax)} onClick={() => openDetail("營業稅明細", rowsFromExp(taxRecs))} />
-        <KPI label="租金－119號" value={fmt(rent119)} onClick={() => openDetail("租金－119號明細", rowsFromExp(rent119Recs))} />
-        <KPI label="租金－121號" value={fmt(rent121)} onClick={() => openDetail("租金－121號明細", rowsFromExp(rent121Recs))} />
-        <KPI label="租金－烘豆場" value={fmt(rentRoast)} onClick={() => openDetail("租金－烘豆場明細", rowsFromExp(rentRoastRecs))} />
+        <KPI label="租金" value={fmt(rentTotal)} sub="點擊看119號/121號/烘豆場明細" onClick={() => openDetail("租金明細（119號／121號／烘豆場）", [
+          { item: "租金－119號", amount: rent119 }, { item: "租金－121號", amount: rent121 }, { item: "租金－烘豆場", amount: rentRoast },
+        ])} />
         <KPI label="電費" value={fmt(elecFee)} onClick={() => openDetail("電費明細", rowsFromExp(elecRecs))} />
         <KPI label="水費" value={fmt(waterFee)} onClick={() => openDetail("水費明細", rowsFromExp(waterRecs))} />
         <KPI label="勞保" value={fmt(laborIns)} onClick={() => openDetail("勞保明細", rowsFromExp(laborInsRecs))} />
@@ -911,7 +914,7 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
         <KPI label="人事成本（薪資）" value={fmt(payroll)} onClick={() => openDetail("人事成本（薪資）明細", rowsFromExp(payrollRecs))} />
         <KPI label="總支出" value={fmt(totalExp)} onClick={() => openDetail("總支出組成", [
           { item: "廠商叫貨", amount: ordSum }, { item: "每日支出", amount: dailyExp }, { item: "營業稅", amount: bizTax },
-          { item: "租金－119號", amount: rent119 }, { item: "租金－121號", amount: rent121 }, { item: "租金－烘豆場", amount: rentRoast },
+          { item: "租金（119號＋121號＋烘豆場）", amount: rentTotal },
           { item: "電費", amount: elecFee }, { item: "水費", amount: waterFee }, { item: "勞保", amount: laborIns },
           { item: "勞退", amount: pension }, { item: "健保", amount: healthIns }, { item: "人事成本（薪資）", amount: payroll },
         ])} />
