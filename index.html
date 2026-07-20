@@ -53,6 +53,15 @@ const STORE_SEED = [
   { id: "st4", name: "烘豆場", retail: false, active: true, parentId: "st1" },
 ];
 
+/* 各門店日結營收「非現金收款方式」細項（每日營業額欄位固定，這些項目可由主檔管理自訂新增／修改／刪除／排序） */
+const SALES_PAY_FIELD_SEED = [
+  ["coop", "店家配合"], ["card", "信用卡"], ["twpay", "台灣Pay"],
+  ["linepay", "LINE Pay"], ["online", "線上商城"], ["transfer", "轉帳"],
+];
+const SALES_PAY_SEED = ["st1", "st2", "st3"].flatMap((storeId) =>
+  SALES_PAY_FIELD_SEED.map(([, name], i) => ({ id: `spi_${storeId}_${i}`, storeId, name, active: true }))
+);
+
 /* 系統保留類別：廠商叫貨（orders 表）自動歸類使用，固定 id，不可刪除／不可停用 */
 const ORDER_CAT_ID = "cat_order";
 
@@ -159,10 +168,10 @@ const monthShift = (m, k) => {
   return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}`;
 };
 
-/* 營收自動計算 */
+/* 營收自動計算（非現金收款方式細項為各門店可自訂的動態欄位，存於 s.pay，key 為 salesPayItems 的 id） */
 const calcSales = (s) => {
   const net = num(s.pos);                                             // 每日營業額
-  const paySum = num(s.coop) + num(s.card) + num(s.twpay) + num(s.linepay) + num(s.online) + num(s.transfer); // 非現金合計
+  const paySum = Object.values(s.pay || {}).reduce((a, v) => a + num(v), 0); // 非現金合計
   const cash = net - paySum;                                          // 現金（推算）
   const diff = cash < 0 ? cash : 0;                                   // 非現金超過營業額 → 異常
   return { net, total: net, paySum, cash, diff };
@@ -236,9 +245,16 @@ function buildSeedData() {
         const tw = Math.round(pos * (0.04 + rnd() * 0.03));
         const co = st === "st2" ? Math.round(pos * (0.06 + rnd() * 0.04)) : 0;
         const hasDiff = m === "2026/07" && d === 12 && st === "st1";
+        const payIdOf = (field) => SALES_PAY_SEED.find((p) => p.storeId === st && p.name === SALES_PAY_FIELD_SEED.find(([f]) => f === field)[1]).id;
+        const pay = {};
+        const coopAmt = co + (hasDiff ? Math.round(pos * 0.55) : 0);
+        if (coopAmt) pay[payIdOf("coop")] = coopAmt;
+        if (card) pay[payIdOf("card")] = card;
+        if (tw) pay[payIdOf("twpay")] = tw;
+        if (lp) pay[payIdOf("linepay")] = lp;
         dailySales.push({
           id: uid("ds"), date, storeId: st,
-          pos, coop: co + (hasDiff ? Math.round(pos * 0.55) : 0), card, twpay: tw, linepay: lp,
+          pos, pay,
           note: "", diffReason: "",
           status: m === "2026/06" || d <= 12 ? "已審核" : d <= 14 ? "待審核" : "草稿",
           createdBy: "u4", createdAt: date + " 21:30",
@@ -343,6 +359,7 @@ function buildSeedData() {
     stores: STORE_SEED, vendors: VENDOR_SEED, categories: CATEGORY_SEED,
     dailySales, expenses, incomes, orders, receivables, targets,
     fixedItems: FIXED_SEED, fixedIncomeItems: [], incomeCategories: INCOME_CAT_SEED,
+    salesPayItems: SALES_PAY_SEED,
     auditLogs: [], approvalLogs: [], payables: [],
   };
 }
@@ -1261,7 +1278,7 @@ function MonthPicker({ value, onChange, onToday, onPickDate, onClearDate, exactD
    每日營收（日結）
 ──────────────────────────────────────────────*/
 const SALES_EMPTY = {
-  date: "", storeId: "", pos: "", coop: "", card: "", twpay: "", linepay: "", online: "", transfer: "",
+  date: "", storeId: "", pos: "", pay: {},
   note: "", diffReason: "",
 };
 
@@ -1275,6 +1292,7 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
   const curStore = stores.some((s) => s.id === storeTab) ? storeTab : (stores[0]?.id || "");
   const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
   const userName = (id) => users.find((u) => u.id === id)?.name || "—";
+  const payItems = (data.salesPayItems || []).filter((p) => p.storeId === curStore && p.active);
 
   const rows = data.dailySales
     .filter((r) => monthOf(r.date) === month && r.storeId === curStore && perm.canSeeRecord(user, r))
@@ -1295,8 +1313,8 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
 
     const rec = {
       ...form,
-      pos: num(form.pos), coop: num(form.coop), card: num(form.card),
-      twpay: num(form.twpay), linepay: num(form.linepay), online: num(form.online), transfer: num(form.transfer),
+      pos: num(form.pos),
+      pay: Object.fromEntries(Object.entries(form.pay || {}).map(([k, v]) => [k, num(v)])),
       status: submit ? "待審核" : form.status === "退回修改" ? "草稿" : form.status,
     };
     if (!rec.id) {
@@ -1374,12 +1392,11 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
           <thead><tr>
             <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
             <th>營業日期</th><th>門店</th><th className="num">每日營業額</th>
-            <th className="num">店家配合</th><th className="num">信用卡</th><th className="num">台灣Pay</th><th className="num">LINE Pay</th>
-            <th className="num">線上商城</th><th className="num">轉帳</th>
+            {payItems.map((p) => <th key={p.id} className="num">{p.name}</th>)}
             <th className="num">現金（推算）</th><th>日結狀態</th><th>建立／審核</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={14}><Empty text="本月尚無日結資料" action={<button className="pl-btn primary" onClick={openNew}>＋ 新增日結</button>} /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={8 + payItems.length}><Empty text="本月尚無日結資料" action={<button className="pl-btn primary" onClick={openNew}>＋ 新增日結</button>} /></td></tr>}
             {rows.map((r) => {
               const c = calcSales(r);
               return (
@@ -1388,12 +1405,7 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
                   <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
                   <td>{nameOf(r.storeId)}</td>
                   <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.pos)}</td>
-                  <td className="num">{r.coop ? fmtN(r.coop) : "—"}</td>
-                  <td className="num">{r.card ? fmtN(r.card) : "—"}</td>
-                  <td className="num">{r.twpay ? fmtN(r.twpay) : "—"}</td>
-                  <td className="num">{r.linepay ? fmtN(r.linepay) : "—"}</td>
-                  <td className="num">{r.online ? fmtN(r.online) : "—"}</td>
-                  <td className="num">{r.transfer ? fmtN(r.transfer) : "—"}</td>
+                  {payItems.map((p) => <td key={p.id} className="num">{(r.pay || {})[p.id] ? fmtN(r.pay[p.id]) : "—"}</td>)}
                   <td className="num">
                     {c.cash >= 0 ? fmtN(c.cash) : <Badge text={fmtN(c.cash)} tone="red" />}
                   </td>
@@ -1419,7 +1431,7 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
       </div>
 
       {editing && (
-        <SalesForm form={editing} setForm={setEditing} stores={stores} onSave={save}
+        <SalesForm form={editing} setForm={setEditing} stores={stores} salesPayItems={data.salesPayItems || []} onSave={save}
           locked={editing.status === "已審核" && !perm.isAdmin(user)}
           adminEditLocked={editing.status === "已審核" && perm.isAdmin(user)}
           onClose={() => setEditing(null)} />
@@ -1428,12 +1440,14 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
   );
 }
 
-function SalesForm({ form, setForm, stores, onSave, onClose, locked, adminEditLocked }) {
+function SalesForm({ form, setForm, stores, salesPayItems, onSave, onClose, locked, adminEditLocked }) {
   const c = calcSales(form);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const numIn = (k) => (
     <input className="pl-input" inputMode="decimal" value={form[k]} onChange={set(k)} disabled={locked} placeholder="0" />
   );
+  const payItems = (salesPayItems || []).filter((p) => p.storeId === form.storeId && p.active);
+  const setPay = (itemId) => (e) => setForm({ ...form, pay: { ...(form.pay || {}), [itemId]: e.target.value } });
   return (
     <Modal title={form.id ? "日結明細" : "新增日結"} onClose={onClose} width={780}>
       {adminEditLocked && (
@@ -1450,12 +1464,11 @@ function SalesForm({ form, setForm, stores, onSave, onClose, locked, adminEditLo
           </select>
         </Field>
         <Field label="每日營業額" required>{numIn("pos")}</Field>
-        <Field label="店家配合">{numIn("coop")}</Field>
-        <Field label="信用卡">{numIn("card")}</Field>
-        <Field label="台灣Pay">{numIn("twpay")}</Field>
-        <Field label="LINE Pay">{numIn("linepay")}</Field>
-        <Field label="線上商城">{numIn("online")}</Field>
-        <Field label="轉帳">{numIn("transfer")}</Field>
+        {payItems.map((p) => (
+          <Field key={p.id} label={p.name}>
+            <input className="pl-input" inputMode="decimal" value={(form.pay || {})[p.id] ?? ""} onChange={setPay(p.id)} disabled={locked} placeholder="0" />
+          </Field>
+        ))}
         <Field label="備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} disabled={locked} /></Field>
       </div>
 
@@ -3570,7 +3583,7 @@ function DragHandle({ draggable, onDragStart, onDragOver, onDrop, onDragEnd }) {
 function MasterModule({ data, update, user, profiles }) {
   const [tab, setTab] = useState("vendors");
   if (!perm.canMaster(user)) return <Empty text="主檔管理僅開放系統管理者。" />;
-  const tabs = [["vendors", "廠商主檔"], ["categories", "類別管理"], ["fixed", "固定支出／收入項目"], ["stores", "門店主檔"], ["targets", "營業額目標"], ["users", "使用者"]];
+  const tabs = [["vendors", "廠商主檔"], ["categories", "類別管理"], ["fixed", "固定支出／收入項目"], ["salespay", "營收項目"], ["stores", "門店主檔"], ["targets", "營業額目標"], ["users", "使用者"]];
   return (
     <div>
       <SectionTitle>主檔管理</SectionTitle>
@@ -3582,6 +3595,7 @@ function MasterModule({ data, update, user, profiles }) {
       {tab === "vendors" && <VendorMaster data={data} update={update} />}
       {tab === "categories" && <CategoryMaster data={data} update={update} />}
       {tab === "fixed" && <FixedMaster data={data} update={update} />}
+      {tab === "salespay" && <SalesPayMaster data={data} update={update} />}
       {tab === "stores" && <StoreMaster data={data} update={update} profiles={profiles} />}
       {tab === "targets" && <TargetMaster data={data} update={update} />}
       {tab === "users" && <UserMaster data={data} profiles={profiles} />}
@@ -3910,6 +3924,91 @@ function FixedMaster({ data, update }) {
   );
 }
 
+/* 各門店「日結營收」非現金收款方式細項主檔：每日營業額欄位固定不變，這裡管理的是
+   店家配合／信用卡／台灣Pay…等可由管理者自行新增、改名、停用、刪除、排序的動態項目 */
+function SalesPayMaster({ data, update }) {
+  const stores = data.stores.filter((s) => s.active && s.retail);
+  const [storeId, setStoreId] = useState(stores[0]?.id || "");
+  const [name, setName] = useState("");
+  const items = (data.salesPayItems || []).filter((p) => p.storeId === storeId);
+  const [reorderMode, setReorderMode] = useState(false);
+  const dragRef = useRef({ id: null, idx: null });
+
+  const add = () => {
+    const n = name.trim();
+    if (!n) return alert("請填寫收款方式名稱");
+    if (items.some((p) => p.name === n)) return alert("此門店已有相同名稱的項目");
+    update((d) => ({ ...d, salesPayItems: [...(d.salesPayItems || []), { id: uid("spi"), storeId, name: n, active: true }] }));
+    setName("");
+  };
+  const toggle = (p) => update((d) => ({ ...d, salesPayItems: d.salesPayItems.map((x) => x.id === p.id ? { ...x, active: !x.active } : x) }));
+  const rename = (p, v) => {
+    const n = v.trim();
+    if (!n || n === p.name) return;
+    update((d) => ({ ...d, salesPayItems: d.salesPayItems.map((x) => x.id === p.id ? { ...x, name: n } : x) }));
+  };
+  const usageOf = (p) => (data.dailySales || []).filter((r) => num((r.pay || {})[p.id]) !== 0).length;
+  const remove = (p) => {
+    const n = usageOf(p);
+    if (n > 0) return alert(`「${p.name}」使用中（共 ${n} 筆日結資料關聯），無法刪除。若不再使用可改為停用。`);
+    if (!confirm(`確定刪除收款方式項目「${p.name}」？`)) return;
+    update((d) => ({ ...d, salesPayItems: d.salesPayItems.filter((x) => x.id !== p.id) }));
+  };
+  const onDrop = (targetP, targetIdx) => (e) => {
+    e.preventDefault();
+    if (dragRef.current.id == null || dragRef.current.id === targetP.id) return;
+    const full = reorderList(data.salesPayItems || [], dragRef.current.id, targetP.id, dragRef.current.idx < targetIdx);
+    update((d) => ({ ...d, salesPayItems: full }));
+    dragRef.current = { id: null, idx: null };
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        {stores.map((s) => (
+          <button key={s.id} className={"pl-btn small" + (storeId === s.id ? " primary" : "")} onClick={() => setStoreId(s.id)}>{s.name}</button>
+        ))}
+        <button className={"pl-btn small" + (reorderMode ? " primary" : "")} onClick={() => setReorderMode((m) => !m)} style={{ marginLeft: "auto" }}>
+          {reorderMode ? "✓ 完成排序" : "排序編輯"}
+        </button>
+      </div>
+
+      <div className="pl-card" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <input className="pl-input" style={{ width: 220 }} placeholder="收款方式名稱（如：Apple Pay）" value={name} onChange={(e) => setName(e.target.value)} />
+        <button className="pl-btn primary" onClick={add}>新增項目</button>
+      </div>
+
+      <div className="pl-card pl-scroll-x">
+        <table className="pl-table">
+          <thead><tr>{reorderMode && <th></th>}<th>收款方式</th><th>狀態</th><th></th></tr></thead>
+          <tbody>
+            {items.length === 0 && <tr><td colSpan={4}><Empty text="此門店尚未設定收款方式項目" /></td></tr>}
+            {items.map((p, idx) => (
+              <tr key={p.id}
+                onDragOver={reorderMode ? (e) => e.preventDefault() : undefined}
+                onDrop={reorderMode ? onDrop(p, idx) : undefined}
+                style={{ opacity: p.active ? 1 : .5, background: reorderMode && dragRef.current.id === p.id ? T.brownSoft : undefined }}>
+                {reorderMode && (
+                  <td><DragHandle draggable onDragStart={() => { dragRef.current = { id: p.id, idx }; }} /></td>
+                )}
+                <td><input className="pl-input" defaultValue={p.name} onBlur={(e) => rename(p, e.target.value)} /></td>
+                <td><Badge text={p.active ? "啟用中" : "已停用"} tone={p.active ? "green" : "gray"} /></td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <button className="pl-btn small" onClick={() => toggle(p)}>{p.active ? "停用" : "啟用"}</button>
+                  {" "}<button className="pl-btn small danger" onClick={() => remove(p)}>刪除</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 10, fontSize: 12.5, color: T.sub }}>
+        「每日營業額」總額欄位固定不變；這裡設定的是各門店「日結營收」中非現金收款方式的細項，停用後不會出現在新增日結的表單中，但既有資料仍會保留、金額仍計入現金推算。
+      </div>
+    </div>
+  );
+}
+
 function StoreMaster({ data, update, profiles }) {
   const [name, setName] = useState("");
   const [editing, setEditing] = useState(null); // { id, name }
@@ -4158,14 +4257,16 @@ function exportAllExcel(data, users) {
   const userName = (id) => (users || []).find((u) => u.id === id)?.name || "";
   const wb = XLSX.utils.book_new();
 
+  const payItemNames = Array.from(new Set((data.salesPayItems || []).map((p) => p.name)));
   const s1 = data.dailySales.map((r) => {
     const c = calcSales(r);
-    return {
-      營業日期: r.date, 門店: nameOf(r.storeId), 每日營業額: r.pos,
-      店家配合: r.coop, 信用卡: r.card, "台灣Pay": r.twpay, "LINE Pay": r.linepay, 線上商城: r.online, 轉帳: r.transfer,
-      非現金合計: c.paySum, "現金（推算）": c.cash,
-      差異原因: r.diffReason, 日結狀態: r.status, 建立人: userName(r.createdBy), 審核人: userName(r.reviewedBy), 備註: r.note,
-    };
+    const payByName = {};
+    (data.salesPayItems || []).filter((p) => p.storeId === r.storeId).forEach((p) => { payByName[p.name] = (r.pay || {})[p.id] || 0; });
+    const row = { 營業日期: r.date, 門店: nameOf(r.storeId), 每日營業額: r.pos };
+    payItemNames.forEach((name) => { row[name] = payByName[name] || 0; });
+    row.非現金合計 = c.paySum; row["現金（推算）"] = c.cash;
+    row.差異原因 = r.diffReason; row.日結狀態 = r.status; row.建立人 = userName(r.createdBy); row.審核人 = userName(r.reviewedBy); row.備註 = r.note;
+    return row;
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(s1), "每日營收");
 
@@ -4214,6 +4315,9 @@ const IMP_TYPES = {
 };
 
 /* 欄位別名：對應公司既有 Excel 的常見欄名 */
+/* Excel 匯入日結營收時，欄位名稱對應到各門店「收款方式細項」主檔中的項目名稱 */
+const SALES_PAY_COL_TO_NAME = { coop: "店家配合", card: "信用卡", twpay: "台灣Pay", linepay: "LINE Pay", online: "線上商城", transfer: "轉帳" };
+
 const COL_ALIAS = {
   date: ["日期", "營業日期", "支出日期", "收入日期", "叫貨日期", "建立日期", "交易日期"],
   store: ["門店", "門市", "店別", "分店", "門店／部門", "部門"],
@@ -4334,10 +4438,18 @@ function ImportModule({ data, update, user }) {
           if (seenSalesKey.has(key)) errs.push("重複：檔案內同門店同日出現多筆");
           seenSalesKey.add(key);
         }
+        /* 非現金收款方式細項是各門店可自訂的動態項目，匯入時依欄位名稱對應到該門店已設定的項目；
+           該門店尚未設定同名項目的欄位，金額不會匯入，需先至主檔管理／營收項目建立後再手動補上 */
+        const pay = {};
+        Object.entries(SALES_PAY_COL_TO_NAME).forEach(([field, itemName]) => {
+          const v = num(pickCol(raw, field));
+          if (!v) return;
+          const item = storeId && (data.salesPayItems || []).find((p) => p.storeId === storeId && p.name === itemName);
+          if (item) pay[item.id] = v;
+          else warns.push(`「${itemName}」門店尚未設定對應收款方式項目，此欄位金額未匯入`);
+        });
         rec = {
-          date, storeId, pos: num(pickCol(raw, "pos")), coop: num(pickCol(raw, "coop")),
-          card: num(pickCol(raw, "card")), twpay: num(pickCol(raw, "twpay")), linepay: num(pickCol(raw, "linepay")),
-          online: num(pickCol(raw, "online")), transfer: num(pickCol(raw, "transfer")),
+          date, storeId, pos: num(pickCol(raw, "pos")), pay,
           note: String(pickCol(raw, "note") || ""), diffReason: "", status: "草稿",
         };
         if (rec.storeId && calcSales(rec).cash < 0) warns.push(`非現金合計超過營業額 ${fmt(-calcSales(rec).cash)}，匯入後請補差異原因`);
@@ -4581,6 +4693,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   const venOf = (id) => data.vendors.find((v) => v.id === id)?.name || "—";
   const catOf = (id) => data.categories.find((c) => c.id === id)?.name || "—";
   const incCatOf = (id) => (data.incomeCategories || []).find((c) => c.id === id)?.name || "—";
+  const salesPayItems = (data.salesPayItems || []).filter((p) => p.storeId === curStore && p.active);
 
   /* ── 日結營收表單 ── */
   const existing = data.dailySales.find((r) => r.date === date && r.storeId === curStore);
@@ -4688,7 +4801,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       }
     }
 
-    const salesFilled = sf && !salesLocked && ["pos", "coop", "card", "twpay", "linepay", "online", "transfer"].some((k) => num(sf[k]) > 0);
+    const salesFilled = sf && !salesLocked && (num(sf.pos) > 0 || Object.values(sf.pay || {}).some((v) => num(v) > 0));
     if (salesFilled) {
       const c = calcSales(sf);
       if (c.cash < 0 && !sf.diffReason.trim()) return alert("日結營收：非現金合計超過營業額，請填寫差異原因。");
@@ -4766,6 +4879,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   const c = calcSales(sf);
   const set = (k) => (e) => setSf({ ...sf, [k]: e.target.value });
   const nIn = (k) => <input className="pl-input" inputMode="decimal" value={sf[k]} onChange={set(k)} disabled={salesLocked} placeholder="0" />;
+  const setPay = (itemId) => (e) => setSf({ ...sf, pay: { ...(sf.pay || {}), [itemId]: e.target.value } });
+  const payIn = (itemId) => <input className="pl-input" inputMode="decimal" value={(sf.pay || {})[itemId] ?? ""} onChange={setPay(itemId)} disabled={salesLocked} placeholder="0" />;
   const cardHead = (title, right) => (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
       <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5 }}>{title}</div>
@@ -4807,12 +4922,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         </>)}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
           <Field label="每日營業額" required>{nIn("pos")}</Field>
-          <Field label="店家配合">{nIn("coop")}</Field>
-          <Field label="信用卡">{nIn("card")}</Field>
-          <Field label="台灣Pay">{nIn("twpay")}</Field>
-          <Field label="LINE Pay">{nIn("linepay")}</Field>
-          <Field label="線上商城">{nIn("online")}</Field>
-          <Field label="轉帳">{nIn("transfer")}</Field>
+          {salesPayItems.map((p) => <Field key={p.id} label={p.name}>{payIn(p.id)}</Field>)}
           <Field label="備註"><input className="pl-input" value={sf.note} onChange={set("note")} disabled={salesLocked} /></Field>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginTop: 12, background: "#FCFAF6", border: `1px solid ${T.line}`, borderRadius: 8, padding: 12 }}>
@@ -4995,7 +5105,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       {/* 送出 */}
       <div className="pl-card" style={{ padding: "12px 16px", display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center", position: "sticky", bottom: 12, zIndex: 20, boxShadow: "0 4px 16px #2B252122" }}>
         <span style={{ fontSize: 13, color: T.sub }}>{date}・{nameOf(curStore)}</span>
-        <span style={{ fontSize: 13 }}>本次新增 <b>{totalNewItems}</b> 筆{salesLocked ? "" : sf && ["pos","coop","card","twpay","linepay","online","transfer"].some(k=>num(sf[k])>0) ? "＋日結營收" : ""}</span>
+        <span style={{ fontSize: 13 }}>本次新增 <b>{totalNewItems}</b> 筆{salesLocked ? "" : sf && (num(sf.pos) > 0 || Object.values(sf.pay || {}).some((v) => num(v) > 0)) ? "＋日結營收" : ""}</span>
         {draftCount > 0 && (
           <button className="pl-btn" onClick={submitAllDrafts}>舊草稿一鍵送審（{draftCount}）</button>
         )}
@@ -5090,8 +5200,7 @@ const rowSales = (r, ctx) => {
   const c = calcSales(r);
   return {
     紀錄ID: r.id, 日期: r.date, 門店ID: r.storeId || "", 門店名稱: ctx.nameOf(r.storeId),
-    每日營業額: num(r.pos), 店家配合: num(r.coop), 信用卡: num(r.card), 台灣Pay: num(r.twpay),
-    "LINE Pay": num(r.linepay), 線上商城: num(r.online), 轉帳: num(r.transfer),
+    每日營業額: num(r.pos), 收款方式明細JSON: JSON.stringify(r.pay || {}),
     非現金合計: c.paySum, 現金推算: c.cash, 差異原因: r.diffReason || "", 日結狀態: r.status,
     備註: r.note || "", 建立人ID: r.createdBy || "", 建立人姓名: ctx.userNm(r.createdBy),
     建立時間: r.createdAt || "", 審核人ID: r.reviewedBy || "", 審核人姓名: ctx.userNm(r.reviewedBy),
@@ -5160,14 +5269,17 @@ const rowAudit = (l, ctx) => ({
 });
 
 /* ── 還原：把匯出列反解析回原始資料結構（欄位名稱需與上面 rowXxx 對稱） ── */
-const parseSales = (row) => ({
-  id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "",
-  pos: num(row["每日營業額"]), coop: num(row["店家配合"]), card: num(row["信用卡"]),
-  twpay: num(row["台灣Pay"]), linepay: num(row["LINE Pay"]), online: num(row["線上商城"]), transfer: num(row["轉帳"]),
-  note: row["備註"] || "", diffReason: row["差異原因"] || "", status: row["日結狀態"] || "草稿",
-  createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
-  reviewedBy: row["審核人ID"] || null, reviewedAt: row["審核時間"] || "",
-});
+const parseSales = (row) => {
+  let pay = {};
+  try { pay = JSON.parse(row["收款方式明細JSON"] || "{}"); } catch { pay = {}; }
+  return {
+    id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "",
+    pos: num(row["每日營業額"]), pay,
+    note: row["備註"] || "", diffReason: row["差異原因"] || "", status: row["日結狀態"] || "草稿",
+    createdBy: row["建立人ID"] || null, createdAt: row["建立時間"] || "",
+    reviewedBy: row["審核人ID"] || null, reviewedAt: row["審核時間"] || "",
+  };
+};
 
 const parseExpense = (row) => ({
   id: row["紀錄ID"], date: row["日期"], storeId: row["門店ID"] || "",
@@ -6442,6 +6554,23 @@ function App() {
           if (!("cash" in r)) return r;
           const { cash, jko, delivery, otherPay, refund, otherIncome, ...rest } = r;
           return { ...rest, pos: num(r.pos) - num(refund), coop: num(jko) + num(delivery) + num(otherPay), twpay: 0 };
+        });
+        /* 日結營收「非現金收款方式」細項改為各門店可自訂項目：若門店尚未有 salesPayItems，
+           依舊固定欄位（店家配合／信用卡／台灣Pay／LINE Pay／線上商城／轉帳）幫該門店建立對應項目，
+           並把該門店既有日結資料的舊欄位金額搬進新的 pay 動態欄位；之後管理者可在主檔管理自行
+           新增／修改／刪除／排序各門店的收款方式項目 */
+        if (!stored.salesPayItems) stored.salesPayItems = [];
+        stored.stores.forEach((store) => {
+          if (stored.salesPayItems.some((p) => p.storeId === store.id)) return;
+          const items = SALES_PAY_FIELD_SEED.map(([field, name]) => ({ id: uid("spi"), storeId: store.id, name, field }));
+          stored.salesPayItems = [...stored.salesPayItems, ...items.map(({ field, ...rest }) => ({ ...rest, active: true }))];
+          stored.dailySales = (stored.dailySales || []).map((r) => {
+            if (r.storeId !== store.id || r.pay) return r;
+            const pay = {};
+            items.forEach(({ field, id }) => { const v = num(r[field]); if (v) pay[id] = v; });
+            const { coop, card, twpay, linepay, online, transfer, ...rest } = r;
+            return { ...rest, pay };
+          });
         });
         delete stored.users; delete stored.currentUserId; // 舊資料殘留欄位，使用者現改由 profiles 提供
         setData(stored);
