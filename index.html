@@ -636,7 +636,8 @@ const acctStoreId = (stores, sid) => {
    （每個月結廠商的原始加總／發票金額／使用中的 payable，供明細下鑽或報表引用）。 */
 function adjustedOrderSum(data, month, storeFilter) {
   const acctOf = (sid) => acctStoreId(data.stores, sid);
-  const ordM = data.orders.filter((o) => monthOf(o.date) === month && (!storeFilter || acctOf(o.storeId) === storeFilter));
+  const allMonthOrders = data.orders.filter((o) => monthOf(o.date) === month);
+  const ordM = allMonthOrders.filter((o) => !storeFilter || acctOf(o.storeId) === storeFilter);
   const cashOrdM = ordM.filter((o) => o.billing !== "月結");
   const monthlyOrdM = ordM.filter((o) => o.billing === "月結");
   const vendorGroups = {};
@@ -645,7 +646,13 @@ function adjustedOrderSum(data, month, storeFilter) {
   const adjustments = [];
   Object.entries(vendorGroups).forEach(([vid, list]) => {
     const rawSum = list.reduce((a, o) => a + num(o.amount), 0);
-    const payable = !storeFilter
+    /* 只有在「這個廠商當月的月結叫貨，全部都落在目前篩選的門店範圍內」才安全套用發票金額——
+       發票沒有拆分門店，如果同一廠商當月同時服務篩選範圍外的其他門店，把整張發票套用到單一
+       門店會不準確，這種情況才退回用原始叫貨加總。大多數廠商只服務單一門店時，即使篩選到
+       單一門店也一樣能正確套用發票調整，不會被誤擋 */
+    const vendorAllOrdersThisMonth = allMonthOrders.filter((o) => o.billing === "月結" && o.vendorId === vid);
+    const hasOrdersOutsideFilter = !!storeFilter && vendorAllOrdersThisMonth.some((o) => acctOf(o.storeId) !== storeFilter);
+    const payable = !hasOrdersOutsideFilter
       ? (data.payables || []).find((p) => p.vendorId === vid && p.period === month && !p.cancelled)
       : null;
     if (payable) {
@@ -720,8 +727,9 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
 
   const revenue = salesM.reduce((a, s) => a + calcSales(s).net, 0);
   const cashSum = salesM.reduce((a, s) => a + calcSales(s).cash, 0);
-  /* 廠商叫貨：月結廠商若有未取消的發票調整（只在「全部門店」時套用，發票沒有拆分門店），
-     採發票／請款金額；否則沿用原始叫貨累計金額 */
+  /* 廠商叫貨：月結廠商若有未取消的發票調整，採發票／請款金額；否則沿用原始叫貨累計金額。
+     單一門店檢視時，只要該廠商當月的月結叫貨沒有涉及篩選範圍外的其他門店，一樣會套用發票調整
+     （詳見 adjustedOrderSum） */
   const { total: ordSum, cashOrdM: ordCashRecs, adjustments: ordAdjustments } = adjustedOrderSum(data, month, storeFilter);
   /* 廠商叫貨明細改以「廠商」彙總（不是逐筆每日叫貨紀錄），每個廠商一行，
      顯示現結／月結各自小計與是否已套用發票調整，依總額排序 */
@@ -913,7 +921,7 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
 
       <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5, margin: "4px 0 10px" }}>支出</div>
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 20 }}>
-        <KPI label="廠商叫貨" value={fmt(ordSum)} sub={storeFilter ? undefined : "月結廠商已套用發票調整"} onClick={() => openDetail("廠商叫貨明細（依廠商彙總）", ordVendorRows)} />
+        <KPI label="廠商叫貨" value={fmt(ordSum)} sub="月結廠商已套用發票調整" onClick={() => openDetail("廠商叫貨明細（依廠商彙總）", ordVendorRows)} />
         <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細（按日彙總）", rowsByDate(dailyExpRecs))} />
         <KPI label="固定支出" value={fmt(fixedExpTotal)} sub="點擊看租金/電費/水費/勞健退/人事/營業稅明細"
           onClick={() => openDetail("固定支出明細", [
