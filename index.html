@@ -177,6 +177,14 @@ const calcSales = (s) => {
   return { net, total: net, paySum, cash, diff };
 };
 
+/* 當日日結是否已完成並鎖定現金推算：只要該門店當日已有非草稿狀態的日結資料，即視為已完成。
+   完成後才新增的支出／收入須標示為「日結後新增」，不得自動納入已鎖定的現金推算 */
+const findDailySales = (data, date, storeId) => (data.dailySales || []).find((r) => r.date === date && r.storeId === storeId);
+const isDayClosed = (data, date, storeId) => {
+  const r = findDailySales(data, date, storeId);
+  return !!(r && r.status !== "草稿");
+};
+
 /* ── 種子交易資料（示範用，可於設定中清除） ── */
 
 /* 各門店固定支出項目（每月可一鍵帶入） */
@@ -1311,18 +1319,32 @@ function SalesModule({ data, update, user, users, logAudit, logApproval }) {
     if (dup) return alert(`${form.date} ${nameOf(form.storeId)} 已有日結資料（狀態：${dup.status}），同一門店同一天僅能有一筆。`);
     if (c.cash < 0 && submit && !form.diffReason.trim()) return alert(`非現金合計超過營業額 ${fmt(-c.cash)}，送審前請填寫差異原因。`);
 
+    const old = form.id ? data.dailySales.find((r) => r.id === form.id) : null;
+    const wasLocked = !!(old && old.status !== "草稿");
     const rec = {
       ...form,
       pos: num(form.pos),
       pay: Object.fromEntries(Object.entries(form.pay || {}).map(([k, v]) => [k, num(v)])),
       status: submit ? "待審核" : form.status === "退回修改" ? "草稿" : form.status,
     };
+    /* 現金推算於首次送出審核時鎖定，之後編輯不再自動重新計算，需走「重新開啟日結／重新結帳」 */
+    if (submit && !wasLocked) {
+      const expSum = data.expenses.filter((r) => r.date === rec.date && r.storeId === rec.storeId).reduce((a, r) => a + num(r.amount), 0);
+      const incSum = (data.incomes || []).filter((r) => r.date === rec.date && r.storeId === rec.storeId).reduce((a, r) => a + num(r.amount), 0);
+      const cs = calcSales(rec);
+      rec.lockedExpSum = expSum; rec.lockedIncSum = incSum;
+      rec.cashCalc = cs.net - cs.paySum - expSum + incSum;
+      rec.cashLockedAt = nowStamp(); rec.cashLockedBy = user.id;
+      rec.reopenLogs = old?.reopenLogs || [];
+    } else if (wasLocked) {
+      rec.lockedExpSum = old.lockedExpSum; rec.lockedIncSum = old.lockedIncSum; rec.cashCalc = old.cashCalc;
+      rec.cashLockedAt = old.cashLockedAt; rec.cashLockedBy = old.cashLockedBy; rec.reopenLogs = old.reopenLogs || [];
+    }
     if (!rec.id) {
       rec.id = uid("ds"); rec.createdBy = user.id; rec.createdAt = nowStamp();
       rec.reviewedBy = null; rec.reviewedAt = null;
       update((d) => ({ ...d, dailySales: [...d.dailySales, rec] }));
     } else {
-      const old = data.dailySales.find((r) => r.id === rec.id);
       if (["已審核"].includes(old.status)) {
         if (!perm.isAdmin(user)) return alert("已審核資料僅系統管理者可修改。");
         logAudit("每日營收", rec.id, old, rec);
@@ -1563,6 +1585,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
       newCats.push(c);
       return c.id;
     };
+    const dayClosed = isDayClosed(data, date, curStore);
     const recs = valid.map((r) => ({
       ...EXP_EMPTY, id: uid("ex"), date, storeId: curStore,
       categoryId: resolveCat(r.categoryName), item: r.item.trim(), vendorId: r.vendorId, amount: num(r.amount),
@@ -1570,6 +1593,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
       docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "", note: r.note.trim(),
       /* 現金付款免審核直接入帳，其餘一律待審核，不再讓使用者自己選草稿／送審 */
       status: autoStatus(r.payMethod), createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
+      postClose: dayClosed,
     }));
     if (newCats.length && !confirm(`將自動新增支出類別：${newCats.map((c) => c.name).join("、")}。確定？`)) return;
     onCommit(recs, newCats);
@@ -1813,6 +1837,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
     if (!rec.id) {
       rec.id = uid("ex");
       rec.createdBy = user.id; rec.createdAt = nowStamp(); rec.reviewedBy = null; rec.reviewedAt = null;
+      rec.postClose = isDayClosed(data, rec.date, rec.storeId);
       update((d) => ({ ...d, expenses: [...d.expenses, rec] }));
     } else {
       if (old.status === "過審") {
@@ -1863,6 +1888,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
 
   const commitFixed = (picked, storeId) => {
     const date = flt.month + "/01";
+    const dayClosed = isDayClosed(data, date, storeId);
     const recs = picked.map((f) => ({
       /* 固定支出項目本來就是預先核准的常態支出，帶入時跳過草稿／待審核，直接入帳 */
       ...EXP_EMPTY, id: uid("ex"),
@@ -1871,7 +1897,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
       payer: user.name, status: "過審", fixedItemId: f.id,
       docType: NO_DOC, noDocReason: num(f.amount) > 0 ? "固定支出項目自動帶入，如有憑證請補件" : "固定支出項目先帶入項目，金額待補",
       note: "固定支出帶入", createdBy: user.id, createdAt: nowStamp(),
-      reviewedBy: null, reviewedAt: null,
+      reviewedBy: null, reviewedAt: null, postClose: dayClosed,
     }));
     update((d) => ({ ...d, expenses: [...d.expenses, ...recs] }));
     setFixedModalOpenFor(null);
@@ -2008,7 +2034,7 @@ function ExpenseRowsTable({ rows, selected, toggleSel, toggleSelAllIn, nameOf, c
               <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
               <td>{nameOf(r.storeId)}</td>
               <td>{catOf(r.categoryId)}</td>
-              <td>{r.item}</td>
+              <td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
               <td>{venOf(r.vendorId) || "—"}</td>
               <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
               <td>{r.payMethod}</td>
@@ -2077,6 +2103,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
     if (!rec.id) {
       rec.id = uid("in");
       rec.createdBy = user.id; rec.createdAt = nowStamp(); rec.reviewedBy = null; rec.reviewedAt = null;
+      rec.postClose = isDayClosed(data, rec.date, rec.storeId);
       update((d) => ({ ...d, incomes: [...(d.incomes || []), rec] }));
     } else {
       if (old.status === "過審") {
@@ -2131,6 +2158,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
 
   const commitFixed = (picked, storeId) => {
     const date = month + "/01";
+    const dayClosed = isDayClosed(data, date, storeId);
     const recs = picked.map((f) => ({
       /* 固定收入項目本來就是預先核准的常態收入，帶入時跳過草稿／待審核，直接入帳 */
       ...INC_EMPTY, id: uid("in"),
@@ -2139,7 +2167,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
       payer: user.name, status: "過審", fixedItemId: f.id,
       docType: NO_DOC, noDocReason: num(f.amount) > 0 ? "固定收入項目自動帶入，如有憑證請補件" : "固定收入項目先帶入項目，金額待補",
       note: "固定收入帶入", createdBy: user.id, createdAt: nowStamp(),
-      reviewedBy: null, reviewedAt: null,
+      reviewedBy: null, reviewedAt: null, postClose: dayClosed,
     }));
     update((d) => ({ ...d, incomes: [...(d.incomes || []), ...recs] }));
     setFixedModalOpenFor(null);
@@ -2274,7 +2302,7 @@ function IncomeRowsTable({ rows, selected, toggleSel, toggleSelAllIn, catOf, use
               <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
               <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
               <td>{catOf(r.categoryId)}</td>
-              <td>{r.item}</td>
+              <td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
               <td className="num" style={{ fontWeight: 600, color: T.green }}>{fmtN(r.amount)}</td>
               <td>{r.payMethod}</td>
               <td>{r.payer}</td>
@@ -4583,8 +4611,8 @@ function ImportModule({ data, update, user }) {
       allValid.forEach(({ rec, type }) => {
         const base = { createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null };
         if (type === "sales") dailySales.push({ ...rec, ...base, id: uid("ds") });
-        if (type === "expense") { const { vendorName, ...r } = rec; expenses.push({ ...r, ...base, id: uid("ex"), vendorId: r.vendorId || ensureVendor(vendorName) }); }
-        if (type === "income") incomes.push({ ...rec, ...base, id: uid("in") });
+        if (type === "expense") { const { vendorName, ...r } = rec; expenses.push({ ...r, ...base, id: uid("ex"), vendorId: r.vendorId || ensureVendor(vendorName), postClose: isDayClosed({ dailySales }, r.date, r.storeId) }); }
+        if (type === "income") incomes.push({ ...rec, ...base, id: uid("in"), postClose: isDayClosed({ dailySales }, rec.date, rec.storeId) });
         if (type === "order") { const { vendorName, ...r } = rec; orders.push({ ...r, id: uid("po"), createdBy: user.id, vendorId: r.vendorId || ensureVendor(vendorName) }); }
         if (type === "ar") {
           const prefix = "AR-" + (rec.date || todayStr()).slice(2, 7).replace("/", "") + "-";
@@ -4693,6 +4721,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   const venOf = (id) => data.vendors.find((v) => v.id === id)?.name || "—";
   const catOf = (id) => data.categories.find((c) => c.id === id)?.name || "—";
   const incCatOf = (id) => (data.incomeCategories || []).find((c) => c.id === id)?.name || "—";
+  const userName = (id) => users.find((u) => u.id === id)?.name || "—";
   const salesPayItems = (data.salesPayItems || []).filter((p) => p.storeId === curStore && p.active);
 
   /* ── 日結營收表單 ── */
@@ -4710,6 +4739,29 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     logApproval("每日營收", sf.id, status, `${date} ${nameOf(curStore)}`);
     update((d) => ({ ...d, dailySales: d.dailySales.map((r) => r.id === sf.id ? { ...r, status, reviewedBy: user.id, reviewedAt: nowStamp() } : r) }));
     setSf({ ...sf, status });
+  };
+
+  /* ── 重新開啟日結／重新結帳：僅系統管理者與會計，重新以目前資料計算並鎖定現金推算，
+     完整記錄原因、操作人員與時間（另存於該筆日結的 reopenLogs，並寫入稽核紀錄頁） ── */
+  const canReopen = perm.isAdmin(user) || perm.isAcct(user);
+  const [reopening, setReopening] = useState(null); // { reason }
+  const confirmReopen = () => {
+    if (!reopening.reason.trim()) return alert("請填寫重新開啟日結／重新結帳的原因。");
+    const rec = existing;
+    const freshExpSum = data.expenses.filter((r) => r.date === rec.date && r.storeId === rec.storeId).reduce((a, r) => a + num(r.amount), 0);
+    const freshIncSum = (data.incomes || []).filter((r) => r.date === rec.date && r.storeId === rec.storeId).reduce((a, r) => a + num(r.amount), 0);
+    const cs = calcSales(rec);
+    const newCashCalc = cs.net - cs.paySum - freshExpSum + freshIncSum;
+    const reason = reopening.reason.trim();
+    const logEntry = { reason, by: user.id, at: nowStamp(), prevCashCalc: rec.cashCalc, prevLockedExpSum: rec.lockedExpSum, prevLockedIncSum: rec.lockedIncSum };
+    const updated = {
+      ...rec, lockedExpSum: freshExpSum, lockedIncSum: freshIncSum, cashCalc: newCashCalc,
+      cashLockedAt: nowStamp(), cashLockedBy: user.id, reopenLogs: [...(rec.reopenLogs || []), logEntry],
+    };
+    logApproval("每日營收", rec.id, "重新結帳", `${date} ${nameOf(curStore)}：原因 ${reason}（現金推算 ${fmt(rec.cashCalc)} → ${fmt(newCashCalc)}）`);
+    update((d) => ({ ...d, dailySales: d.dailySales.map((r) => r.id === rec.id ? updated : r) }));
+    setSf(updated);
+    setReopening(null);
   };
 
   /* ── 當日已記錄清單 ── */
@@ -4848,14 +4900,43 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       else logAudit("每日營收", salesRec.id, existing, salesRec);
     }
 
+    /* 當日日結若已完成（非草稿），本次新增的支出／收入視為「日結後新增」，不得自動納入
+       已鎖定的現金推算；日結本身若已鎖定，這次編輯也不重新計算現金推算，除非走「重新結帳」 */
+    const dayWasLocked = !!(existing && existing.status !== "草稿");
+    if (dayWasLocked) {
+      expRecs.forEach((r) => { r.postClose = true; });
+      incRecs.forEach((r) => { r.postClose = true; });
+    }
+    if (salesRec) {
+      if (!dayWasLocked) {
+        const lockedExpSum = expSum + expRecs.reduce((a, r) => a + r.amount, 0);
+        const lockedIncSum = incSum + incRecs.reduce((a, r) => a + r.amount, 0);
+        const cs = calcSales(salesRec);
+        salesRec.lockedExpSum = lockedExpSum;
+        salesRec.lockedIncSum = lockedIncSum;
+        salesRec.cashCalc = cs.net - cs.paySum - lockedExpSum + lockedIncSum;
+        salesRec.cashLockedAt = nowStamp();
+        salesRec.cashLockedBy = user.id;
+        salesRec.reopenLogs = existing?.reopenLogs || [];
+      } else {
+        salesRec.lockedExpSum = existing.lockedExpSum;
+        salesRec.lockedIncSum = existing.lockedIncSum;
+        salesRec.cashCalc = existing.cashCalc;
+        salesRec.cashLockedAt = existing.cashLockedAt;
+        salesRec.cashLockedBy = existing.cashLockedBy;
+        salesRec.reopenLogs = existing.reopenLogs || [];
+      }
+    }
+
     const newCatNames = [...newExpCats, ...newIncCats].map((c) => c.name);
     const parts = [
       salesFilled && "日結營收",
-      expRecs.length && `支出 ${expRecs.length} 筆`,
-      incRecs.length && `收入 ${incRecs.length} 筆`,
+      expRecs.length && `支出 ${expRecs.length} 筆${dayWasLocked ? "（日結後新增）" : ""}`,
+      incRecs.length && `收入 ${incRecs.length} 筆${dayWasLocked ? "（日結後新增）" : ""}`,
       ordRecs.length && `叫貨 ${ordRecs.length} 筆`,
     ].filter(Boolean).join("、");
-    const confirmMsg = `確定送出今日資料？（${parts}）` + (newCatNames.length ? `\n將自動新增類別：${newCatNames.join("、")}` : "");
+    const confirmMsg = `確定送出今日資料？（${parts}）` + (newCatNames.length ? `\n將自動新增類別：${newCatNames.join("、")}` : "")
+      + (dayWasLocked && (expRecs.length || incRecs.length) ? `\n\n注意：當日日結已完成並鎖定現金推算，本次新增的支出／收入將標示為「日結後新增」，不會納入現金推算，除非後續執行「重新開啟日結／重新結帳」。` : "");
     if (!confirm(confirmMsg)) return;
 
     update((d) => ({
@@ -4889,11 +4970,23 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   );
   const totalNewItems = filledExp.length + filledInc.length + filledOrd.length;
 
-  /* 現金（推算）＝每日對帳資訊，獨立於日結營收區塊：營業額－非現金合計－當日支出＋當日收入，
-     含已記錄資料與本次新增（尚未送出）的支出／收入，讓使用者輸入完當天全部資料後即可核對現金 */
-  const cashExpSum = expSum + filledExp.reduce((a, r) => a + num(r.amount), 0);
-  const cashIncSum = incSum + filledInc.reduce((a, r) => a + num(r.amount), 0);
-  const cashCalc = num(sf.pos) - c.paySum - cashExpSum + cashIncSum;
+  /* 現金（推算）＝每日對帳資訊，獨立於日結營收區塊。日結一旦完成送出即鎖定當時的現金推算，
+     之後不再自動重新計算；未完成日結前則即時試算（含本次尚未送出的新增支出／收入），
+     方便使用者在正式送出前先預覽 */
+  const dayLocked = !!(existing && existing.cashLockedAt);
+  const postCloseExpCount = dayExp.filter((r) => r.postClose).length;
+  const postCloseIncCount = dayInc.filter((r) => r.postClose).length;
+  let cashNet, cashPaySum, cashExpSum, cashIncSum, cashCalc;
+  if (dayLocked) {
+    const cs = calcSales(existing);
+    cashNet = cs.net; cashPaySum = cs.paySum;
+    cashExpSum = existing.lockedExpSum; cashIncSum = existing.lockedIncSum; cashCalc = existing.cashCalc;
+  } else {
+    cashNet = num(sf.pos); cashPaySum = c.paySum;
+    cashExpSum = expSum + filledExp.reduce((a, r) => a + num(r.amount), 0);
+    cashIncSum = incSum + filledInc.reduce((a, r) => a + num(r.amount), 0);
+    cashCalc = cashNet - cashPaySum - cashExpSum + cashIncSum;
+  }
 
   return (
     <div>
@@ -4954,7 +5047,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
               <tbody>
                 {dayExp.map((r) => (
                   <tr key={r.id}>
-                    <td>{catOf(r.categoryId)}</td><td>{r.item}</td>
+                    <td>{catOf(r.categoryId)}</td><td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
                     <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
                     <td>{r.payMethod}</td><td>{r.payer}</td>
                     <td><Badge text={r.status} /></td>
@@ -5007,7 +5100,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
               <tbody>
                 {dayInc.map((r) => (
                   <tr key={r.id}>
-                    <td>{incCatOf(r.categoryId)}</td><td>{r.item}</td>
+                    <td>{incCatOf(r.categoryId)}</td><td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
                     <td className="num" style={{ fontWeight: 600, color: T.green }}>{fmtN(r.amount)}</td>
                     <td>{r.payMethod}</td><td>{r.payer}</td>
                     <td><Badge text={r.status} /></td>
@@ -5107,20 +5200,54 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setOrdRows([...ordRows, blankOrd()])}>＋ 新增一列</button>
       </div>
 
-      {/* ⑤ 現金（推算）── 每日對帳資訊，獨立於日結營收之外；輸入完當天全部收支後在此核對現金 */}
+      {/* ⑤ 現金（推算）── 每日對帳資訊，獨立於日結營收之外；日結完成送出後即鎖定，不因後續補登資料而改變 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14, borderTop: `3px solid ${T.green}` }}>
-        {cardHead(`⑤ 現金（推算）`, null)}
+        {cardHead(`⑤ 現金（推算）`, dayLocked ? <Badge text="已鎖定" tone="green" /> : <Badge text="未鎖定・即時試算" tone="yellow" />)}
         <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 12 }}>
-          現金推算 ＝ 每日營業額－非現金合計－當日支出＋當日收入（含本次尚未送出的新增資料），系統自動計算。
+          {dayLocked
+            ? `現金推算已於日結完成送出當下鎖定（${existing.cashLockedAt}${existing.cashLockedBy ? "・" + userName(existing.cashLockedBy) : ""}），不會因後續新增收入或支出而自動重新計算。`
+            : "現金推算 ＝ 每日營業額－非現金合計－當日支出＋當日收入（含本次尚未送出的新增資料），系統自動計算；送出今日資料後即鎖定。"}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, background: "#FCFAF6", border: `1px solid ${T.line}`, borderRadius: 8, padding: 12 }}>
-          <MiniStat label="每日營業額" value={fmt(num(sf.pos))} />
-          <MiniStat label="非現金合計" value={fmt(c.paySum)} />
+          <MiniStat label="每日營業額" value={fmt(cashNet)} />
+          <MiniStat label="非現金合計" value={fmt(cashPaySum)} />
           <MiniStat label="當日支出" value={fmt(cashExpSum)} />
           <MiniStat label="當日收入" value={fmt(cashIncSum)} />
           <MiniStat label="現金（推算）" value={fmt(cashCalc)} tone={cashCalc >= 0 ? "green" : "red"} />
         </div>
+        {dayLocked && (postCloseExpCount > 0 || postCloseIncCount > 0) && (
+          <div style={{ marginTop: 10, background: T.yellowBg, borderRadius: 8, padding: 10, fontSize: 12.5, color: T.yellow }}>
+            另有「日結後新增」支出 {postCloseExpCount} 筆、收入 {postCloseIncCount} 筆未列入以上現金推算（資料仍正常保留於帳務系統）。如需納入計算，請使用下方「重新開啟日結／重新結帳」。
+          </div>
+        )}
+        {dayLocked && (
+          <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            {canReopen
+              ? <button className="pl-btn small" onClick={() => setReopening({ reason: "" })}>重新開啟日結／重新結帳</button>
+              : <span style={{ fontSize: 12.5, color: T.sub }}>重新開啟日結僅開放系統管理者與會計人員。</span>}
+            {(existing.reopenLogs || []).length > 0 && (
+              <span style={{ fontSize: 12.5, color: T.sub }}>
+                已重新結帳 {existing.reopenLogs.length} 次，最近一次：{existing.reopenLogs[existing.reopenLogs.length - 1].at}・{userName(existing.reopenLogs[existing.reopenLogs.length - 1].by)}・原因：{existing.reopenLogs[existing.reopenLogs.length - 1].reason}
+              </span>
+            )}
+          </div>
+        )}
       </div>
+
+      {reopening && (
+        <Modal title="重新開啟日結／重新結帳" onClose={() => setReopening(null)} width={480}>
+          <div style={{ fontSize: 13, color: T.sub, marginBottom: 10 }}>
+            {date}・{nameOf(curStore)}：將以目前所有支出／收入資料（含日結後新增的補登資料）重新計算並鎖定現金推算，此操作將完整記錄原因、操作人員與時間。
+          </div>
+          <Field label="重新結帳原因" required>
+            <input className="pl-input" value={reopening.reason} onChange={(e) => setReopening({ ...reopening, reason: e.target.value })} placeholder="例：補登遺漏的支出後重新核對現金" autoFocus />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button className="pl-btn" onClick={() => setReopening(null)}>取消</button>
+            <button className="pl-btn primary" onClick={confirmReopen}>確定重新結帳</button>
+          </div>
+        </Modal>
+      )}
 
       {/* 送出 */}
       <div className="pl-card" style={{ padding: "12px 16px", display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center", position: "sticky", bottom: 12, zIndex: 20, boxShadow: "0 4px 16px #2B252122" }}>
@@ -6591,6 +6718,20 @@ function App() {
             const { coop, card, twpay, linepay, online, transfer, ...rest } = r;
             return { ...rest, pay };
           });
+        });
+        /* 現金推算改為日結完成時鎖定：既有已完成（非草稿）的日結資料尚無鎖定快照，用目前
+           資料庫裡的當日支出／收入金額當作最佳估算基準補上鎖定值，往後才不會被後續新增
+           的補登資料影響；之後如需重新計算，可用「重新開啟日結／重新結帳」功能處理 */
+        stored.dailySales = (stored.dailySales || []).map((r) => {
+          if (r.status === "草稿" || r.cashLockedAt) return r;
+          const expSum = (stored.expenses || []).filter((e) => e.date === r.date && e.storeId === r.storeId).reduce((a, e) => a + num(e.amount), 0);
+          const incSum = (stored.incomes || []).filter((e) => e.date === r.date && e.storeId === r.storeId).reduce((a, e) => a + num(e.amount), 0);
+          const cs = calcSales(r);
+          return {
+            ...r, lockedExpSum: expSum, lockedIncSum: incSum,
+            cashCalc: cs.net - cs.paySum - expSum + incSum,
+            cashLockedAt: r.reviewedAt || r.createdAt || nowStamp(), cashLockedBy: null, reopenLogs: [],
+          };
         });
         delete stored.users; delete stored.currentUserId; // 舊資料殘留欄位，使用者現改由 profiles 提供
         setData(stored);
