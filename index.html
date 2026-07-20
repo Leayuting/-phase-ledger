@@ -91,6 +91,10 @@ const SALES_STATUS = ["草稿", "待審核", "已審核", "退回修改"];
 const EXP_STATUS = ["草稿", "待審核", "過審", "已退回"];
 /* 單據／憑證管理：不強制任何單一類型（如發票）為必填，只強制「要嘛選一種類型、要嘛選無憑證＋填原因」 */
 const DOC_TYPES = ["發票", "收據", "電子發票", "免用統一發票收據", "請款單", "估價單", "匯款證明", "交易明細", "電子憑證", "其他佐證文件"];
+/* 這幾個支出類別在營運總覽會被獨立列成一張卡片（租金依地址拆三筆＋營業稅＋電費／水費／勞保／勞退／健保／人事成本），
+   不算進「每日支出」殘值桶；每日收支頁面的「固定支出」也用同一份名單判斷，兩邊金額才會對得起來，
+   不受「是否透過帶入固定支出功能建立」這件事影響（手動輸入的電費跟帶入的電費算法要一致） */
+const ITEMIZED_EXP_CAT_NAMES = ["租金-119號", "租金-121號", "租金-烘豆場", "營業稅", "電費", "水費", "勞保", "勞退", "健保", "人事成本"];
 const NO_DOC = "無憑證";
 /* 驗證憑證欄位：回傳錯誤訊息字串，沒問題回傳 null */
 const validateDoc = (form) => {
@@ -1662,12 +1666,15 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
   }).sort((a, b) => cmpDate(b.date, a.date));
 
   /* 合計排除「已退回」（除非使用者特意篩選只看已退回），跟營運總覽的口徑一致；
-     已退回紀錄本身仍留在表格裡可見，只是不計入合計。另外把固定支出（有 fixedItemId，
-     代表是從「主檔管理→固定支出項目」帶入的紀錄）獨立列出，跟固定收入的判斷方式一致。
-     這裡的合計已經是目前分頁涵蓋的所有門店區塊（例如中山門市＋烘豆場）加總後的結果 */
+     已退回紀錄本身仍留在表格裡可見，只是不計入合計。「固定支出」＝類別屬於營運總覽會
+     獨立列卡片的那幾種（租金／電費／水費／勞保／勞退／健保／人事成本／營業稅），跟
+     Dashboard 的「每日支出」用同一份判斷依據，不管這筆是手動輸入還是用「帶入固定支出」
+     建立的都一樣算，這樣兩邊金額才會對得起來。這裡的合計已經是目前分頁涵蓋的所有門店
+     區塊（例如中山門市＋烘豆場）加總後的結果 */
+  const isItemizedExpCat = (categoryId) => ITEMIZED_EXP_CAT_NAMES.includes(catOf(categoryId));
   const countedRows = rows.filter((r) => flt.status === "已退回" || r.status !== "已退回");
   const total = countedRows.reduce((a, r) => a + num(r.amount), 0);
-  const fixedTotal = countedRows.filter((r) => r.fixedItemId).reduce((a, r) => a + num(r.amount), 0);
+  const fixedTotal = countedRows.filter((r) => isItemizedExpCat(r.categoryId)).reduce((a, r) => a + num(r.amount), 0);
   const generalTotal = total - fixedTotal;
   const toggleSelAllIn = (list) => setSelected((s) => {
     const allSelected = list.length > 0 && list.every((r) => s.has(r.id));
@@ -1806,10 +1813,10 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
         const bRows = rows.filter((r) => r.storeId === s.id);
         const bCounted = bRows.filter((r) => flt.status === "已退回" || r.status !== "已退回");
         const bTotal = bCounted.reduce((a, r) => a + num(r.amount), 0);
-        const bFixedTotal = bCounted.filter((r) => r.fixedItemId).reduce((a, r) => a + num(r.amount), 0);
+        const bFixedTotal = bCounted.filter((r) => isItemizedExpCat(r.categoryId)).reduce((a, r) => a + num(r.amount), 0);
         const bGeneralTotal = bTotal - bFixedTotal;
-        const bGeneralRows = bRows.filter((r) => !r.fixedItemId);
-        const bFixedRows = bRows.filter((r) => r.fixedItemId);
+        const bGeneralRows = bRows.filter((r) => !isItemizedExpCat(r.categoryId));
+        const bFixedRows = bRows.filter((r) => isItemizedExpCat(r.categoryId));
         const { forStore: bFixedForStore, todo: bFixedTodo } = fixedTodoFor(s.id);
         return (
           <div key={s.id} style={{ marginBottom: 26 }}>
