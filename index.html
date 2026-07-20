@@ -3702,6 +3702,13 @@ function CategoryMaster({ data, update }) {
     update((d) => ({ ...d, [key]: d[key].map((x) => x.id === editing.id ? { ...x, name: nm } : x) }));
     setEditing(null);
   };
+  const move = (idx, dir) => {
+    const j = idx + dir;
+    if (j < 0 || j >= list.length) return;
+    const arr = [...list];
+    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+    update((d) => ({ ...d, [key]: arr }));
+  };
 
   return (
     <div>
@@ -3718,12 +3725,12 @@ function CategoryMaster({ data, update }) {
             onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
           <button className="pl-btn primary" onClick={add}>＋ 新增類別</button>
           <span style={{ fontSize: 12.5, color: T.sub, marginLeft: "auto" }}>
-            使用中的類別無法刪除，可改為停用；未使用的類別可直接刪除。
+            使用中的類別無法刪除，可改為停用；未使用的類別可直接刪除。可用▲▼調整顯示順序。
           </span>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 8, padding: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 8, padding: 14 }}>
           {list.length === 0 && <Empty text="尚無類別" />}
-          {list.map((c) => {
+          {list.map((c, idx) => {
             const u = usageOf(c);
             return (
               <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 12px", opacity: c.active ? 1 : .5 }}>
@@ -3732,6 +3739,8 @@ function CategoryMaster({ data, update }) {
                   {u.n > 0 && <span style={{ fontSize: 11.5, color: T.sub, marginLeft: 6 }}>{u.desc}</span>}
                 </span>
                 <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button className="pl-btn small" disabled={idx === 0} onClick={() => move(idx, -1)} aria-label="上移">▲</button>
+                  <button className="pl-btn small" disabled={idx === list.length - 1} onClick={() => move(idx, 1)} aria-label="下移">▼</button>
                   {isExp && <button className="pl-btn small" title="固定支出會納入月報固定支出統計" onClick={() => toggleFixed(c)}>{c.fixed ? "固定" : "一般"}</button>}
                   <button className="pl-btn small" disabled={c.id === ORDER_CAT_ID} title={c.id === ORDER_CAT_ID ? "系統保留類別，無法編輯名稱" : ""} onClick={() => setEditing({ id: c.id, name: c.name })}>編輯</button>
                   <button className="pl-btn small" disabled={c.id === ORDER_CAT_ID} title={c.id === ORDER_CAT_ID ? "系統保留類別，用於廠商叫貨自動歸類，無法停用" : ""} onClick={() => toggle(c)}>{c.active ? "停用" : "啟用"}</button>
@@ -3784,6 +3793,18 @@ function FixedMaster({ data, update }) {
   const setAmt = (f, v) => update((d) => ({ ...d, [listKey]: d[listKey].map((x) => x.id === f.id ? { ...x, amount: num(v) } : x) }));
   const toggle = (f) => update((d) => ({ ...d, [listKey]: d[listKey].map((x) => x.id === f.id ? { ...x, active: !x.active } : x) }));
   const remove = (f) => { if (confirm(`刪除固定項目「${f.item}」？`)) update((d) => ({ ...d, [listKey]: d[listKey].filter((x) => x.id !== f.id) })); };
+  /* items 是依門店篩選過的子集合，搬移時要用 id 去底下完整的清單裡找到這兩筆各自的位置交換，
+     不能直接對調 items 裡的相鄰 index（不然會跟其他門店的項目混在一起，順序對不起來） */
+  const move = (idx, dir) => {
+    const j = idx + dir;
+    if (j < 0 || j >= items.length) return;
+    const aId = items[idx].id, bId = items[j].id;
+    const full = [...(data[listKey] || [])];
+    const ai = full.findIndex((x) => x.id === aId);
+    const bi = full.findIndex((x) => x.id === bId);
+    [full[ai], full[bi]] = [full[bi], full[ai]];
+    update((d) => ({ ...d, [listKey]: full }));
+  };
 
   return (
     <div>
@@ -3812,11 +3833,15 @@ function FixedMaster({ data, update }) {
 
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
-          <thead><tr><th>{isExp ? "支出類別" : "收入類別"}</th><th>項目</th><th className="num">每月金額（可直接修改）</th><th>{isExp ? "付款方式" : "收款方式"}</th><th>狀態</th><th></th></tr></thead>
+          <thead><tr><th></th><th>{isExp ? "支出類別" : "收入類別"}</th><th>項目</th><th className="num">每月金額（可直接修改）</th><th>{isExp ? "付款方式" : "收款方式"}</th><th>狀態</th><th></th></tr></thead>
           <tbody>
-            {items.length === 0 && <tr><td colSpan={6}><Empty text={`此門店尚未設定固定${isExp ? "支出" : "收入"}項目`} /></td></tr>}
-            {items.map((f) => (
+            {items.length === 0 && <tr><td colSpan={7}><Empty text={`此門店尚未設定固定${isExp ? "支出" : "收入"}項目`} /></td></tr>}
+            {items.map((f, idx) => (
               <tr key={f.id} style={f.active ? {} : { opacity: .5 }}>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <button className="pl-btn small" disabled={idx === 0} onClick={() => move(idx, -1)} aria-label="上移">▲</button>
+                  {" "}<button className="pl-btn small" disabled={idx === items.length - 1} onClick={() => move(idx, 1)} aria-label="下移">▼</button>
+                </td>
                 <td>{catOf(f.categoryId)}</td>
                 <td>{f.item}</td>
                 <td className="num" style={{ width: 180 }}>
@@ -3872,6 +3897,13 @@ function StoreMaster({ data, update, profiles }) {
     update((d) => ({ ...d, stores: d.stores.map((x) => x.id === editing.id ? { ...x, name: nm } : x) }));
     setEditing(null);
   };
+  const move = (idx, dir) => {
+    const j = idx + dir;
+    if (j < 0 || j >= data.stores.length) return;
+    const arr = [...data.stores];
+    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+    update((d) => ({ ...d, stores: arr }));
+  };
 
   return (
     <div className="pl-card">
@@ -3880,12 +3912,16 @@ function StoreMaster({ data, update, profiles }) {
         <button className="pl-btn primary" onClick={() => { if (name.trim()) { update((d) => ({ ...d, stores: [...d.stores, { id: uid("st"), name: name.trim(), retail: true, active: true }] })); setName(""); } }}>新增</button>
       </div>
       <table className="pl-table">
-        <thead><tr><th>名稱</th><th>類型</th><th>狀態</th><th></th></tr></thead>
+        <thead><tr><th></th><th>名稱</th><th>類型</th><th>狀態</th><th></th></tr></thead>
         <tbody>
-          {data.stores.map((s) => {
+          {data.stores.map((s, idx) => {
             const u = usageOf(s);
             return (
               <tr key={s.id}>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <button className="pl-btn small" disabled={idx === 0} onClick={() => move(idx, -1)} aria-label="上移">▲</button>
+                  {" "}<button className="pl-btn small" disabled={idx === data.stores.length - 1} onClick={() => move(idx, 1)} aria-label="下移">▼</button>
+                </td>
                 <td>{s.name}</td>
                 <td>{s.retail ? "門市（列入營收）" : "後勤／共用"}</td>
                 <td><Badge text={s.active ? "啟用中" : "停用"} tone={s.active ? "green" : "gray"} /></td>
