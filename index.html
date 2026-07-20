@@ -1158,11 +1158,16 @@ function MonthPicker({ value, onChange, onToday, onPickDate, exactDate }) {
   };
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
-      <button className="pl-btn small" onClick={() => onChange(monthShift(value, -1))} aria-label="上一月">‹</button>
+      {/* 有選精確日期時，左右鍵改成以「天」為單位跳，不要整個跳一個月 */}
+      <button className="pl-btn small"
+        onClick={() => (exactDate && onPickDate ? onPickDate(dayShift(exactDate, -1)) : onChange(monthShift(value, -1)))}
+        aria-label={exactDate ? "前一天" : "上一月"}>‹</button>
       <button type="button" className="pl-btn small" style={{ minWidth: 118 }} onClick={openPicker}>
         📅 {exactDate ? dateLabel(exactDate) : monthLabel(value)} ▾
       </button>
-      <button className="pl-btn small" onClick={() => onChange(monthShift(value, 1))} aria-label="下一月">›</button>
+      <button className="pl-btn small"
+        onClick={() => (exactDate && onPickDate ? onPickDate(dayShift(exactDate, 1)) : onChange(monthShift(value, 1)))}
+        aria-label={exactDate ? "後一天" : "下一月"}>›</button>
       <button className="pl-btn small" onClick={() => onChange(monthOf(todayStr()))}>本月</button>
       <button className="pl-btn small" onClick={() => (onToday ? onToday(todayStr()) : onChange(monthOf(todayStr())))}>今天</button>
       {open && (
