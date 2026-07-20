@@ -1161,13 +1161,16 @@ function MonthPicker({ value, onChange, onToday, onPickDate, onClearDate, exactD
      （例如預設就帶當月 1 號，使用者又剛好要選 1 號），瀏覽器不會觸發 onChange，
      如果之前是靠 onChange 直接套用＋關閉，就會變成「選 1 號完全沒反應」。
      現在改成按鈕直接讀 draft 目前的值套用，不管 onChange 有沒有被觸發都能正確運作，
-     彈窗也只有按「前往」或點外面才會關閉，不會選到一半自己跳掉。 */
+     彈窗也只有按「前往」或點外面才會關閉，不會選到一半自己跳掉。
+     彈窗是月份選擇還是日期選擇，看目前是不是在單日檢視模式（exactDate 有沒有值）：
+     月份檢視時只給選「年／月」，不會因為選了完整日期而被誤判成要切去單日檢視。 */
+  const isDayMode = !!exactDate;
   const [draft, setDraft] = useState(value + "/01");
   const openPicker = () => { setDraft(value + "/01"); setOpen((o) => !o); };
   const confirmDraft = () => {
     if (!draft || !validDate(draft)) return;
     onChange(monthOf(draft));
-    if (onPickDate) onPickDate(draft);
+    if (isDayMode && onPickDate) onPickDate(draft);
     setOpen(false);
   };
   return (
@@ -1203,8 +1206,12 @@ function MonthPicker({ value, onChange, onToday, onPickDate, onClearDate, exactD
            跳來跳去點不到 */
         <div className="pl-card" style={{ position: "absolute", top: "110%", left: 0, zIndex: 40, padding: 10, display: "flex", gap: 6 }}
           onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false); }}>
-          <input type="date" className="pl-input" value={draft.replace(/\//g, "-")}
-            onChange={(e) => { if (e.target.value) setDraft(e.target.value.replace(/-/g, "/")); }}
+          <input type={isDayMode ? "date" : "month"} className="pl-input"
+            value={isDayMode ? draft.replace(/\//g, "-") : draft.slice(0, 7).replace("/", "-")}
+            onChange={(e) => {
+              if (!e.target.value) return;
+              setDraft(isDayMode ? e.target.value.replace(/-/g, "/") : e.target.value.replace("-", "/") + "/01");
+            }}
             onKeyDown={(e) => { if (e.key === "Enter") confirmDraft(); }} autoFocus />
           <button type="button" className="pl-btn small primary" onClick={confirmDraft}>前往</button>
         </div>
