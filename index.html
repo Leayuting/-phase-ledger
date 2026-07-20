@@ -105,10 +105,10 @@ const DOC_TYPES = ["發票", "收據", "電子發票", "免用統一發票收據
    不受「是否透過帶入固定支出功能建立」這件事影響（手動輸入的電費跟帶入的電費算法要一致） */
 const ITEMIZED_EXP_CAT_NAMES = ["租金-119號", "租金-121號", "租金-烘豆場", "營業稅", "電費", "水費", "勞保", "勞退", "健保", "人事成本"];
 const NO_DOC = "無憑證";
-/* 驗證憑證欄位：回傳錯誤訊息字串，沒問題回傳 null */
+/* 驗證憑證欄位：回傳錯誤訊息字串，沒問題回傳 null。「無憑證」可直接選擇送出，
+   不強制填寫原因、也不需上傳附件；之後若取得憑證，仍可另外補上傳附件，不影響原始帳務資料 */
 const validateDoc = (form) => {
-  if (!form.docType) return "請選擇單據／憑證類型（若無憑證，請選擇「無憑證」並填寫原因）";
-  if (form.docType === NO_DOC && !(form.noDocReason || "").trim()) return "已選擇「無憑證」，請填寫原因（如：廠商未提供、臨時採購、零星支出）";
+  if (!form.docType) return "請選擇單據／憑證類型（若無憑證，請選擇「無憑證」）";
   return null;
 };
 /* 匯出與備份中心：manifest／匯出說明會標記此版本號 */
@@ -598,8 +598,9 @@ function AttachmentView({ value }) {
   );
 }
 
-/* 單筆表單用：憑證類型下拉＋（依類型顯示）附件上傳或無憑證原因。
-   不強制一定要上傳檔案本身（可之後補件），只強制「有選類型」跟「選無憑證要填原因」。 */
+/* 單筆表單用：憑證類型下拉＋附件上傳，選「無憑證」時另外顯示原因欄。
+   「無憑證」可直接選擇並儲存，不強制填寫原因、也不強制上傳附件；之後若取得憑證，
+   仍可回來補上傳附件（不影響原始帳務資料），所以附件上傳欄位在「無憑證」時也會顯示。 */
 function DocumentField({ docType, noDocReason, attachment, onChange, disabled, label }) {
   return (
     <>
@@ -610,16 +611,15 @@ function DocumentField({ docType, noDocReason, attachment, onChange, disabled, l
           <option value={NO_DOC}>{NO_DOC}</option>
         </select>
       </Field>
-      {docType === NO_DOC ? (
-        <Field label="無憑證原因" required span={2}>
+      {docType === NO_DOC && (
+        <Field label="無憑證原因（選填）" span={2}>
           <input className="pl-input" value={noDocReason || ""} onChange={(e) => onChange({ noDocReason: e.target.value })}
-            placeholder="例：廠商未提供、臨時採購、零星支出" disabled={disabled} />
-        </Field>
-      ) : (
-        <Field label="上傳憑證檔案（可之後補傳）" span={2}>
-          <AttachmentInput value={attachment} onChange={(a) => onChange({ attachment: a })} />
+            placeholder="例：廠商未提供、臨時採購、零星支出（可留空）" disabled={disabled} />
         </Field>
       )}
+      <Field label={docType === NO_DOC ? "上傳憑證檔案（選填，之後取得憑證可再補上傳）" : "上傳憑證檔案（可之後補傳）"} span={2}>
+        <AttachmentInput value={attachment} onChange={(a) => onChange({ attachment: a })} disabled={disabled} />
+      </Field>
     </>
   );
 }
@@ -636,7 +636,7 @@ function DocTypeCell({ docType, noDocReason, onChange }) {
       </select>
       {docType === NO_DOC && (
         <input className="pl-input" style={{ marginTop: 4 }} value={noDocReason || ""}
-          onChange={(e) => onChange({ noDocReason: e.target.value })} placeholder="無憑證原因" />
+          onChange={(e) => onChange({ noDocReason: e.target.value })} placeholder="無憑證原因（選填）" />
       )}
     </td>
   );
@@ -646,7 +646,12 @@ function DocTypeCell({ docType, noDocReason, onChange }) {
 function DocCell({ docType, noDocReason, attachment }) {
   if (!docType) return <AttachmentView value={attachment} />;
   if (docType === NO_DOC) {
-    return <span style={{ color: T.red, fontSize: 12.5 }} title={noDocReason || ""}>無憑證{noDocReason ? `（${noDocReason}）` : ""}</span>;
+    return (
+      <span style={{ color: T.red, fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 4 }} title={noDocReason || ""}>
+        無憑證{noDocReason ? `（${noDocReason}）` : ""}
+        {attachment && attachment.data && <AttachmentView value={attachment} />}
+      </span>
+    );
   }
   return (
     <span style={{ fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 4 }}>
