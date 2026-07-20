@@ -783,6 +783,13 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const rowsFromExp = (recs) => recs.map((e) => ({ date: e.date, store: nameOf(e.storeId), item: `${catById[e.categoryId]?.name || "—"}｜${e.item}`, amount: num(e.amount) }));
   const rowsFromInc = (recs) => recs.map((r) => ({ date: r.date, store: nameOf(r.storeId), item: `${incCatById[r.categoryId]?.name || "—"}｜${r.item}`, amount: num(r.amount) }));
   const rowsFromSales = (recs) => recs.map((s) => ({ date: s.date, store: nameOf(s.storeId), item: "每日營業額", amount: calcSales(s).net }));
+  /* 按日期彙總金額（不展開每一筆明細），只顯示「日期」＋「當日總金額」兩欄，
+     用在筆數多、只需要快速掌握每日概況、不需要逐筆檢視的明細（例如每日支出） */
+  const rowsByDate = (recs) => {
+    const byDate = {};
+    recs.forEach((r) => { byDate[r.date] = (byDate[r.date] || 0) + num(r.amount); });
+    return Object.entries(byDate).sort((a, b) => cmpDate(b[0], a[0])).map(([date, amount]) => ({ date, amount }));
+  };
   const openDetail = (title, rows) => setDetail({ title, rows });
 
   /* 圖表資料 */
@@ -880,7 +887,7 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
       <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5, margin: "4px 0 10px" }}>支出</div>
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 20 }}>
         <KPI label="廠商叫貨" value={fmt(ordSum)} sub={storeFilter ? undefined : "月結廠商已套用發票調整"} onClick={() => openDetail("廠商叫貨明細", ordSumRows)} />
-        <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細", rowsFromExp(dailyExpRecs))} />
+        <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細（按日彙總）", rowsByDate(dailyExpRecs))} />
         <KPI label="營業稅" value={fmt(bizTax)} onClick={() => openDetail("營業稅明細", rowsFromExp(taxRecs))} />
         <KPI label="租金－119號" value={fmt(rent119)} onClick={() => openDetail("租金－119號明細", rowsFromExp(rent119Recs))} />
         <KPI label="租金－121號" value={fmt(rent121)} onClick={() => openDetail("租金－121號明細", rowsFromExp(rent121Recs))} />
@@ -1053,23 +1060,29 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
 /* 金額明細下鑽視窗：組成該金額的實際紀錄清單，或彙總金額的子項目拆解 */
 function KpiDetailModal({ title, rows, onClose }) {
   const total = rows.reduce((a, r) => a + num(r.amount), 0);
-  const hasDateStore = rows.some((r) => r.date || r.store);
+  /* 各欄位只有在真的有資料時才顯示，例如按日期彙總的明細只有日期＋金額兩欄，
+     不會多出一欄空白的「門店」或「項目」，畫面更簡潔 */
+  const hasDate = rows.some((r) => r.date);
+  const hasStore = rows.some((r) => r.store);
+  const hasItem = rows.some((r) => r.item);
+  const colCount = [hasDate, hasStore, hasItem, true].filter(Boolean).length;
   return (
     <Modal title={title} onClose={onClose} width={620}>
       <div className="pl-scroll-x" style={{ maxHeight: 420 }}>
         <table className="pl-table">
           <thead><tr>
-            {hasDateStore && <th>日期</th>}
-            {hasDateStore && <th>門店</th>}
-            <th>項目</th><th className="num">金額</th>
+            {hasDate && <th>日期</th>}
+            {hasStore && <th>門店</th>}
+            {hasItem && <th>項目</th>}
+            <th className="num">金額</th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={hasDateStore ? 4 : 2}><Empty text="此區間尚無明細" /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={colCount}><Empty text="此區間尚無明細" /></td></tr>}
             {rows.map((r, i) => (
               <tr key={i}>
-                {hasDateStore && <td style={{ whiteSpace: "nowrap" }}>{r.date || "—"}</td>}
-                {hasDateStore && <td>{r.store || "—"}</td>}
-                <td>{r.item}</td>
+                {hasDate && <td style={{ whiteSpace: "nowrap" }}>{r.date || "—"}</td>}
+                {hasStore && <td>{r.store || "—"}</td>}
+                {hasItem && <td>{r.item}</td>}
                 <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
               </tr>
             ))}
