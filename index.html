@@ -706,7 +706,6 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const acctOf = (sid) => acctStoreId(data.stores, sid);
   const inMonth = (r) => monthOf(r.date) === month && (!storeFilter || acctOf(r.storeId) === storeFilter);
   const catById = Object.fromEntries(data.categories.map((c) => [c.id, c]));
-  const incCatById = Object.fromEntries((data.incomeCategories || []).map((c) => [c.id, c]));
   const nameOf = (id) => stores.find((s) => s.id === id)?.name || "—";
   const userName = (id) => users.find((u) => u.id === id)?.name || "—";
   /* 門店篩選只給「會計主體」層級選（中山店會自動含烘豆場，因為烘豆場的 parentId 是中山店），
@@ -758,6 +757,8 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   const totalInc = revenue + onlineInc + otherInc + equipInc;
   /* 實收營業額：目前無獨立退款／折讓紀錄，依需求＝總收入（營業額＋官網收入＋其他收入＋設備出租收入） */
   const actualRevenue = totalInc;
+  /* 其他收入來源＝官網收入＋其他收入＋勤美設備出租收入合併，首頁只顯示一張卡片，點擊才展開細項 */
+  const otherIncSourceTotal = onlineInc + otherInc + equipInc;
 
   /* 支出拆分：租金依地址拆三筆、營業稅、電費、水費、勞保、勞退、健保、人事成本各自獨立列出，
      其餘一律歸入「每日支出」（原本統稱一般支出的殘值桶） */
@@ -792,7 +793,10 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
     elecCatId, waterCatId, laborInsCatId, pensionCatId, healthInsCatId, payrollCatId].filter(Boolean));
   const dailyExpRecs = expM.filter((e) => !itemizedExpIds.has(e.categoryId));
   const dailyExp = sumAmt(dailyExpRecs);
-  const totalExp = ordSum + dailyExp + bizTax + rentTotal + elecFee + waterFee + laborIns + pension + healthIns + payroll;
+  /* 固定支出＝租金＋電費＋水費＋勞保＋勞退＋健保＋人事成本＋營業稅加總，跟營運總覽首頁只顯示
+     一張合併卡片、點擊才展開看各細項的設計原則一致（首頁摘要、需要再下鑽） */
+  const fixedExpTotal = bizTax + rentTotal + elecFee + waterFee + laborIns + pension + healthIns + payroll;
+  const totalExp = ordSum + dailyExp + fixedExpTotal;
   const profit = totalInc - totalExp;
 
   const arUnpaid = data.receivables.filter((r) => r.status !== "呆帳").reduce((a, r) => a + Math.max(0, num(r.amount) - num(r.received)), 0);
@@ -805,8 +809,6 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
   /* 金額明細下鑽：點擊 KPI 卡片時顯示組成該金額的實際紀錄或子項目 */
   const [detail, setDetail] = useState(null);
   /* 明細一律從 1 號開始（日期由舊到新），跟帳本習慣的排序方式一致 */
-  const rowsFromExp = (recs) => recs.map((e) => ({ date: e.date, store: nameOf(e.storeId), item: `${catById[e.categoryId]?.name || "—"}｜${e.item}`, amount: num(e.amount) })).sort((a, b) => cmpDate(a.date, b.date));
-  const rowsFromInc = (recs) => recs.map((r) => ({ date: r.date, store: nameOf(r.storeId), item: `${incCatById[r.categoryId]?.name || "—"}｜${r.item}`, amount: num(r.amount) })).sort((a, b) => cmpDate(a.date, b.date));
   const rowsFromSales = (recs) => recs.map((s) => ({ date: s.date, store: nameOf(s.storeId), item: "每日營業額", amount: calcSales(s).net })).sort((a, b) => cmpDate(a.date, b.date));
   /* 按日期彙總金額（不展開每一筆明細），只顯示「日期」＋「當日總金額」兩欄，
      用在筆數多、只需要快速掌握每日概況、不需要逐筆檢視的明細（例如每日支出） */
@@ -896,16 +898,16 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
       <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15.5, margin: "4px 0 10px" }}>收入</div>
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 20 }}>
         <KPI label="營業額" value={fmt(revenue)} onClick={() => openDetail("營業額明細", rowsFromSales(salesM))} />
-        <KPI label="官網收入" value={fmt(onlineInc)} onClick={() => openDetail("官網收入明細", rowsFromInc(onlineIncRecs))} />
-        <KPI label="其他收入" value={fmt(otherInc)} onClick={() => openDetail("其他收入明細", rowsFromInc(otherIncRecs))} />
-        <KPI label="勤美設備出租收入" value={fmt(equipInc)} onClick={() => openDetail("勤美設備出租收入明細", rowsFromInc(equipIncRecs))} />
+        <KPI label="其他收入來源" value={fmt(otherIncSourceTotal)} sub="點擊看官網／其他／勤美設備出租明細"
+          onClick={() => openDetail("其他收入來源明細（官網／其他／勤美設備出租）", [
+            { item: "官網收入", amount: onlineInc }, { item: "其他收入", amount: otherInc }, { item: "勤美設備出租收入", amount: equipInc },
+          ])} />
         <KPI label="營業額達成率" value={achieve !== null ? `${achieve.toFixed(2)}%` : "尚未設定目標"}
           tone={achieve !== null ? (achieve >= 100 ? "green" : achieve >= 80 ? "yellow" : "red") : undefined}
           sub={tgtSum > 0 ? `目標 ${fmt(tgtSum)}・${achieve >= 100 ? "已達成" : `距 100% 尚差 ${(100 - achieve).toFixed(2)}%`}` : undefined} />
-        <KPI label="實收營業額" value={fmt(actualRevenue)} tone="green" sub="＝營業額＋官網收入＋其他收入＋設備出租收入"
+        <KPI label="實收營業額" value={fmt(actualRevenue)} tone="green" sub="＝營業額＋其他收入來源"
           onClick={() => openDetail("實收營業額組成", [
-            { item: "營業額", amount: revenue }, { item: "官網收入", amount: onlineInc },
-            { item: "其他收入", amount: otherInc }, { item: "勤美設備出租收入", amount: equipInc },
+            { item: "營業額", amount: revenue }, { item: "其他收入來源（官網＋其他＋勤美設備出租）", amount: otherIncSourceTotal },
           ])} />
       </div>
 
@@ -913,21 +915,15 @@ function Dashboard({ data, month, setMonth, storeFilter, setStoreFilter, users, 
       <div style={{ ...gridStyle, gridTemplateColumns: "repeat(auto-fill,minmax(170px,1fr))", marginBottom: 20 }}>
         <KPI label="廠商叫貨" value={fmt(ordSum)} sub={storeFilter ? undefined : "月結廠商已套用發票調整"} onClick={() => openDetail("廠商叫貨明細（依廠商彙總）", ordVendorRows)} />
         <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細（按日彙總）", rowsByDate(dailyExpRecs))} />
-        <KPI label="營業稅" value={fmt(bizTax)} onClick={() => openDetail("營業稅明細", rowsFromExp(taxRecs))} />
-        <KPI label="租金" value={fmt(rentTotal)} sub="點擊看119號/121號/烘豆場明細" onClick={() => openDetail("租金明細（119號／121號／烘豆場）", [
-          { item: "租金－119號", amount: rent119 }, { item: "租金－121號", amount: rent121 }, { item: "租金－烘豆場", amount: rentRoast },
-        ])} />
-        <KPI label="電費" value={fmt(elecFee)} onClick={() => openDetail("電費明細", rowsFromExp(elecRecs))} />
-        <KPI label="水費" value={fmt(waterFee)} onClick={() => openDetail("水費明細", rowsFromExp(waterRecs))} />
-        <KPI label="勞保" value={fmt(laborIns)} onClick={() => openDetail("勞保明細", rowsFromExp(laborInsRecs))} />
-        <KPI label="勞退" value={fmt(pension)} onClick={() => openDetail("勞退明細", rowsFromExp(pensionRecs))} />
-        <KPI label="健保" value={fmt(healthIns)} onClick={() => openDetail("健保明細", rowsFromExp(healthInsRecs))} />
-        <KPI label="人事成本（薪資）" value={fmt(payroll)} onClick={() => openDetail("人事成本（薪資）明細", rowsFromExp(payrollRecs))} />
+        <KPI label="固定支出" value={fmt(fixedExpTotal)} sub="點擊看租金/電費/水費/勞健退/人事/營業稅明細"
+          onClick={() => openDetail("固定支出明細", [
+            { item: "租金－119號", amount: rent119 }, { item: "租金－121號", amount: rent121 }, { item: "租金－烘豆場", amount: rentRoast },
+            { item: "電費", amount: elecFee }, { item: "水費", amount: waterFee }, { item: "勞保", amount: laborIns },
+            { item: "勞退", amount: pension }, { item: "健保", amount: healthIns }, { item: "人事成本（薪資）", amount: payroll },
+            { item: "營業稅", amount: bizTax },
+          ])} />
         <KPI label="總支出" value={fmt(totalExp)} onClick={() => openDetail("總支出組成", [
-          { item: "廠商叫貨", amount: ordSum }, { item: "每日支出", amount: dailyExp }, { item: "營業稅", amount: bizTax },
-          { item: "租金（119號＋121號＋烘豆場）", amount: rentTotal },
-          { item: "電費", amount: elecFee }, { item: "水費", amount: waterFee }, { item: "勞保", amount: laborIns },
-          { item: "勞退", amount: pension }, { item: "健保", amount: healthIns }, { item: "人事成本（薪資）", amount: payroll },
+          { item: "廠商叫貨", amount: ordSum }, { item: "每日支出", amount: dailyExp }, { item: "固定支出（租金＋電費＋水費＋勞健退＋人事＋營業稅）", amount: fixedExpTotal },
         ])} />
       </div>
 
