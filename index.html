@@ -3545,6 +3545,28 @@ function AnnualReportTab({ data, update, user }) {
 /* ────────────────────────────────────────────
    主檔管理・目標・使用者
 ──────────────────────────────────────────────*/
+
+/* 拖曳排序共用邏輯：把 id 為 dragId 的項目搬到 id 為 targetId 的項目旁邊，在「完整清單」full
+   裡操作（不是畫面上可能篩選過的子集合），這樣「固定支出項目」這種依門店篩選顯示的清單，
+   排序結果還是正確地反映在完整資料裡，不會把其他門店的項目順序打亂。after 由拖曳方向決定
+   （往下拖插在目標後面，往上拖插在目標前面），呼叫端只要負責存回資料就好 */
+function reorderList(full, dragId, targetId, after) {
+  const item = full.find((x) => x.id === dragId);
+  const rest = full.filter((x) => x.id !== dragId);
+  const idx = rest.findIndex((x) => x.id === targetId);
+  rest.splice(after ? idx + 1 : idx, 0, item);
+  return rest;
+}
+
+/* 排序編輯模式共用的拖曳把手：平時列表是一般瀏覽模式，不顯示拖曳功能；
+   點「排序編輯」後才顯示每列左側的拖曳把手（≡），可直接拖放調整順序 */
+function DragHandle({ draggable, onDragStart, onDragOver, onDrop, onDragEnd }) {
+  return (
+    <span draggable={draggable} onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}
+      style={{ cursor: "grab", padding: "0 8px", color: T.sub, fontSize: 16, userSelect: "none" }} title="拖曳調整順序">≡</span>
+  );
+}
+
 function MasterModule({ data, update, user, profiles }) {
   const [tab, setTab] = useState("vendors");
   if (!perm.canMaster(user)) return <Empty text="主檔管理僅開放系統管理者。" />;
@@ -3569,6 +3591,8 @@ function MasterModule({ data, update, user, profiles }) {
 
 function VendorMaster({ data, update }) {
   const [editing, setEditing] = useState(null);
+  const [reorderMode, setReorderMode] = useState(false);
+  const dragRef = useRef({ id: null, idx: null });
   const save = (v) => {
     if (!v.name.trim()) return alert("請填寫廠商名稱");
     if (!v.id) {
@@ -3586,27 +3610,34 @@ function VendorMaster({ data, update }) {
     if (!confirm(`確定刪除廠商「${v.name}」？`)) return;
     update((d) => ({ ...d, vendors: d.vendors.filter((x) => x.id !== v.id) }));
   };
-  const move = (idx, dir) => {
-    const j = idx + dir;
-    if (j < 0 || j >= data.vendors.length) return;
-    const arr = [...data.vendors];
-    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+  const onDrop = (targetV, targetIdx) => (e) => {
+    e.preventDefault();
+    if (dragRef.current.id == null || dragRef.current.id === targetV.id) return;
+    const arr = reorderList(data.vendors, dragRef.current.id, targetV.id, dragRef.current.idx < targetIdx);
     update((d) => ({ ...d, vendors: arr }));
+    dragRef.current = { id: null, idx: null };
   };
   return (
     <div className="pl-card pl-scroll-x">
-      <div style={{ padding: 12, borderBottom: `1px solid ${T.line}` }}>
+      <div style={{ padding: 12, borderBottom: `1px solid ${T.line}`, display: "flex", gap: 8, alignItems: "center" }}>
         <button className="pl-btn primary small" onClick={() => setEditing({ id: null, name: "", contact: "", phone: "", billing: "現結", monthlyDay: "", payMethod: "現金", active: true, note: "" })}>＋ 新增廠商</button>
+        <button className={"pl-btn small" + (reorderMode ? " primary" : "")} onClick={() => setReorderMode((m) => !m)}>
+          {reorderMode ? "✓ 完成排序" : "排序編輯"}
+        </button>
       </div>
       <table className="pl-table">
-        <thead><tr><th></th><th>廠商名稱</th><th>聯絡人</th><th>電話</th><th>結帳方式</th><th>月結日</th><th>預設付款</th><th>狀態</th><th>備註</th><th></th></tr></thead>
+        <thead><tr>{reorderMode && <th></th>}<th>廠商名稱</th><th>聯絡人</th><th>電話</th><th>結帳方式</th><th>月結日</th><th>預設付款</th><th>狀態</th><th>備註</th><th></th></tr></thead>
         <tbody>
           {data.vendors.map((v, idx) => (
-            <tr key={v.id}>
-              <td style={{ whiteSpace: "nowrap" }}>
-                <button className="pl-btn small" disabled={idx === 0} onClick={() => move(idx, -1)} aria-label="上移">▲</button>
-                {" "}<button className="pl-btn small" disabled={idx === data.vendors.length - 1} onClick={() => move(idx, 1)} aria-label="下移">▼</button>
-              </td>
+            <tr key={v.id}
+              onDragOver={reorderMode ? (e) => e.preventDefault() : undefined}
+              onDrop={reorderMode ? onDrop(v, idx) : undefined}
+              style={reorderMode ? { background: dragRef.current.id === v.id ? T.brownSoft : undefined } : undefined}>
+              {reorderMode && (
+                <td>
+                  <DragHandle draggable onDragStart={() => { dragRef.current = { id: v.id, idx }; }} />
+                </td>
+              )}
               <td>{v.name}</td><td>{v.contact}</td><td>{v.phone}</td>
               <td>{v.billing}</td><td>{v.monthlyDay ? "每月 " + v.monthlyDay + " 日" : "—"}</td><td>{v.payMethod}</td>
               <td><Badge text={v.active ? "啟用中" : "停用"} tone={v.active ? "green" : "gray"} /></td>
@@ -3702,20 +3733,25 @@ function CategoryMaster({ data, update }) {
     update((d) => ({ ...d, [key]: d[key].map((x) => x.id === editing.id ? { ...x, name: nm } : x) }));
     setEditing(null);
   };
-  const move = (idx, dir) => {
-    const j = idx + dir;
-    if (j < 0 || j >= list.length) return;
-    const arr = [...list];
-    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+  const [reorderMode, setReorderMode] = useState(false);
+  const dragRef = useRef({ id: null, idx: null });
+  const onDrop = (targetC, targetIdx) => (e) => {
+    e.preventDefault();
+    if (dragRef.current.id == null || dragRef.current.id === targetC.id) return;
+    const arr = reorderList(list, dragRef.current.id, targetC.id, dragRef.current.idx < targetIdx);
     update((d) => ({ ...d, [key]: arr }));
+    dragRef.current = { id: null, idx: null };
   };
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center" }}>
         {[["exp", "支出類別"], ["inc", "收入類別"]].map(([k, label]) => (
           <button key={k} className={"pl-btn small" + (tab === k ? " primary" : "")} onClick={() => { setTab(k); setName(""); }}>{label}</button>
         ))}
+        <button className={"pl-btn small" + (reorderMode ? " primary" : "")} onClick={() => setReorderMode((m) => !m)} style={{ marginLeft: "auto" }}>
+          {reorderMode ? "✓ 完成排序" : "排序編輯"}
+        </button>
       </div>
 
       <div className="pl-card">
@@ -3725,7 +3761,7 @@ function CategoryMaster({ data, update }) {
             onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
           <button className="pl-btn primary" onClick={add}>＋ 新增類別</button>
           <span style={{ fontSize: 12.5, color: T.sub, marginLeft: "auto" }}>
-            使用中的類別無法刪除，可改為停用；未使用的類別可直接刪除。可用▲▼調整顯示順序。
+            使用中的類別無法刪除，可改為停用；未使用的類別可直接刪除。
           </span>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 8, padding: 14 }}>
@@ -3733,14 +3769,16 @@ function CategoryMaster({ data, update }) {
           {list.map((c, idx) => {
             const u = usageOf(c);
             return (
-              <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 12px", opacity: c.active ? 1 : .5 }}>
-                <span style={{ minWidth: 0 }}>
+              <div key={c.id}
+                onDragOver={reorderMode ? (e) => e.preventDefault() : undefined}
+                onDrop={reorderMode ? onDrop(c, idx) : undefined}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 12px", opacity: c.active ? 1 : .5, background: reorderMode && dragRef.current.id === c.id ? T.brownSoft : undefined }}>
+                <span style={{ minWidth: 0, display: "flex", alignItems: "center" }}>
+                  {reorderMode && <DragHandle draggable onDragStart={() => { dragRef.current = { id: c.id, idx }; }} />}
                   {c.name}
                   {u.n > 0 && <span style={{ fontSize: 11.5, color: T.sub, marginLeft: 6 }}>{u.desc}</span>}
                 </span>
                 <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                  <button className="pl-btn small" disabled={idx === 0} onClick={() => move(idx, -1)} aria-label="上移">▲</button>
-                  <button className="pl-btn small" disabled={idx === list.length - 1} onClick={() => move(idx, 1)} aria-label="下移">▼</button>
                   {isExp && <button className="pl-btn small" title="固定支出會納入月報固定支出統計" onClick={() => toggleFixed(c)}>{c.fixed ? "固定" : "一般"}</button>}
                   <button className="pl-btn small" disabled={c.id === ORDER_CAT_ID} title={c.id === ORDER_CAT_ID ? "系統保留類別，無法編輯名稱" : ""} onClick={() => setEditing({ id: c.id, name: c.name })}>編輯</button>
                   <button className="pl-btn small" disabled={c.id === ORDER_CAT_ID} title={c.id === ORDER_CAT_ID ? "系統保留類別，用於廠商叫貨自動歸類，無法停用" : ""} onClick={() => toggle(c)}>{c.active ? "停用" : "啟用"}</button>
@@ -3793,24 +3831,26 @@ function FixedMaster({ data, update }) {
   const setAmt = (f, v) => update((d) => ({ ...d, [listKey]: d[listKey].map((x) => x.id === f.id ? { ...x, amount: num(v) } : x) }));
   const toggle = (f) => update((d) => ({ ...d, [listKey]: d[listKey].map((x) => x.id === f.id ? { ...x, active: !x.active } : x) }));
   const remove = (f) => { if (confirm(`刪除固定項目「${f.item}」？`)) update((d) => ({ ...d, [listKey]: d[listKey].filter((x) => x.id !== f.id) })); };
-  /* items 是依門店篩選過的子集合，搬移時要用 id 去底下完整的清單裡找到這兩筆各自的位置交換，
+  /* items 是依門店篩選過的子集合，拖曳排序要用 id 去底下完整的清單裡操作，
      不能直接對調 items 裡的相鄰 index（不然會跟其他門店的項目混在一起，順序對不起來） */
-  const move = (idx, dir) => {
-    const j = idx + dir;
-    if (j < 0 || j >= items.length) return;
-    const aId = items[idx].id, bId = items[j].id;
-    const full = [...(data[listKey] || [])];
-    const ai = full.findIndex((x) => x.id === aId);
-    const bi = full.findIndex((x) => x.id === bId);
-    [full[ai], full[bi]] = [full[bi], full[ai]];
+  const [reorderMode, setReorderMode] = useState(false);
+  const dragRef = useRef({ id: null, idx: null });
+  const onDrop = (targetF, targetIdx) => (e) => {
+    e.preventDefault();
+    if (dragRef.current.id == null || dragRef.current.id === targetF.id) return;
+    const full = reorderList(data[listKey] || [], dragRef.current.id, targetF.id, dragRef.current.idx < targetIdx);
     update((d) => ({ ...d, [listKey]: full }));
+    dragRef.current = { id: null, idx: null };
   };
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center" }}>
         <button className={"pl-btn small" + (fkind === "expense" ? " primary" : "")} onClick={() => { setFkind("expense"); setForm({ categoryId: "", item: "", amount: "", payMethod: "銀行轉帳" }); }}>固定支出</button>
         <button className={"pl-btn small" + (fkind === "income" ? " primary" : "")} style={fkind === "income" ? { background: T.green, borderColor: T.green } : {}} onClick={() => { setFkind("income"); setForm({ categoryId: "", item: "", amount: "", payMethod: "銀行轉帳" }); }}>固定收入</button>
+        <button className={"pl-btn small" + (reorderMode ? " primary" : "")} onClick={() => setReorderMode((m) => !m)} style={{ marginLeft: "auto" }}>
+          {reorderMode ? "✓ 完成排序" : "排序編輯"}
+        </button>
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
@@ -3833,15 +3873,19 @@ function FixedMaster({ data, update }) {
 
       <div className="pl-card pl-scroll-x">
         <table className="pl-table">
-          <thead><tr><th></th><th>{isExp ? "支出類別" : "收入類別"}</th><th>項目</th><th className="num">每月金額（可直接修改）</th><th>{isExp ? "付款方式" : "收款方式"}</th><th>狀態</th><th></th></tr></thead>
+          <thead><tr>{reorderMode && <th></th>}<th>{isExp ? "支出類別" : "收入類別"}</th><th>項目</th><th className="num">每月金額（可直接修改）</th><th>{isExp ? "付款方式" : "收款方式"}</th><th>狀態</th><th></th></tr></thead>
           <tbody>
             {items.length === 0 && <tr><td colSpan={7}><Empty text={`此門店尚未設定固定${isExp ? "支出" : "收入"}項目`} /></td></tr>}
             {items.map((f, idx) => (
-              <tr key={f.id} style={f.active ? {} : { opacity: .5 }}>
-                <td style={{ whiteSpace: "nowrap" }}>
-                  <button className="pl-btn small" disabled={idx === 0} onClick={() => move(idx, -1)} aria-label="上移">▲</button>
-                  {" "}<button className="pl-btn small" disabled={idx === items.length - 1} onClick={() => move(idx, 1)} aria-label="下移">▼</button>
-                </td>
+              <tr key={f.id}
+                onDragOver={reorderMode ? (e) => e.preventDefault() : undefined}
+                onDrop={reorderMode ? onDrop(f, idx) : undefined}
+                style={{ opacity: f.active ? 1 : .5, background: reorderMode && dragRef.current.id === f.id ? T.brownSoft : undefined }}>
+                {reorderMode && (
+                  <td>
+                    <DragHandle draggable onDragStart={() => { dragRef.current = { id: f.id, idx }; }} />
+                  </td>
+                )}
                 <td>{catOf(f.categoryId)}</td>
                 <td>{f.item}</td>
                 <td className="num" style={{ width: 180 }}>
@@ -3897,31 +3941,40 @@ function StoreMaster({ data, update, profiles }) {
     update((d) => ({ ...d, stores: d.stores.map((x) => x.id === editing.id ? { ...x, name: nm } : x) }));
     setEditing(null);
   };
-  const move = (idx, dir) => {
-    const j = idx + dir;
-    if (j < 0 || j >= data.stores.length) return;
-    const arr = [...data.stores];
-    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+  const [reorderMode, setReorderMode] = useState(false);
+  const dragRef = useRef({ id: null, idx: null });
+  const onDrop = (targetS, targetIdx) => (e) => {
+    e.preventDefault();
+    if (dragRef.current.id == null || dragRef.current.id === targetS.id) return;
+    const arr = reorderList(data.stores, dragRef.current.id, targetS.id, dragRef.current.idx < targetIdx);
     update((d) => ({ ...d, stores: arr }));
+    dragRef.current = { id: null, idx: null };
   };
 
   return (
     <div className="pl-card">
-      <div style={{ padding: 12, borderBottom: `1px solid ${T.line}`, display: "flex", gap: 8 }}>
+      <div style={{ padding: 12, borderBottom: `1px solid ${T.line}`, display: "flex", gap: 8, alignItems: "center" }}>
         <input className="pl-input" style={{ maxWidth: 240 }} placeholder="新增門店／部門名稱" value={name} onChange={(e) => setName(e.target.value)} />
         <button className="pl-btn primary" onClick={() => { if (name.trim()) { update((d) => ({ ...d, stores: [...d.stores, { id: uid("st"), name: name.trim(), retail: true, active: true }] })); setName(""); } }}>新增</button>
+        <button className={"pl-btn small" + (reorderMode ? " primary" : "")} onClick={() => setReorderMode((m) => !m)} style={{ marginLeft: "auto" }}>
+          {reorderMode ? "✓ 完成排序" : "排序編輯"}
+        </button>
       </div>
       <table className="pl-table">
-        <thead><tr><th></th><th>名稱</th><th>類型</th><th>狀態</th><th></th></tr></thead>
+        <thead><tr>{reorderMode && <th></th>}<th>名稱</th><th>類型</th><th>狀態</th><th></th></tr></thead>
         <tbody>
           {data.stores.map((s, idx) => {
             const u = usageOf(s);
             return (
-              <tr key={s.id}>
-                <td style={{ whiteSpace: "nowrap" }}>
-                  <button className="pl-btn small" disabled={idx === 0} onClick={() => move(idx, -1)} aria-label="上移">▲</button>
-                  {" "}<button className="pl-btn small" disabled={idx === data.stores.length - 1} onClick={() => move(idx, 1)} aria-label="下移">▼</button>
-                </td>
+              <tr key={s.id}
+                onDragOver={reorderMode ? (e) => e.preventDefault() : undefined}
+                onDrop={reorderMode ? onDrop(s, idx) : undefined}
+                style={reorderMode && dragRef.current.id === s.id ? { background: T.brownSoft } : undefined}>
+                {reorderMode && (
+                  <td>
+                    <DragHandle draggable onDragStart={() => { dragRef.current = { id: s.id, idx }; }} />
+                  </td>
+                )}
                 <td>{s.name}</td>
                 <td>{s.retail ? "門市（列入營收）" : "後勤／共用"}</td>
                 <td><Badge text={s.active ? "啟用中" : "停用"} tone={s.active ? "green" : "gray"} /></td>
