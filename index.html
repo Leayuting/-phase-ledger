@@ -1814,7 +1814,6 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
         <MonthPicker value={flt.month} onChange={(m) => setFlt({ ...flt, month: m, date: "" })}
           onToday={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })}
           onPickDate={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })} />
-        {flt.date && <Badge text={`精確日期：${flt.date}`} tone="brown" />}
         {flt.date && <button className="pl-btn small" onClick={() => setFlt({ ...flt, date: "" })}>清除日期</button>}
         <input className="pl-input" style={{ width: 180 }} placeholder="搜尋類別／廠商／品項／金額" value={flt.q} onChange={fset("q")} />
         <input className="pl-input" style={{ width: 100 }} placeholder="付款人" value={flt.payer} onChange={fset("payer")} />
@@ -2431,7 +2430,6 @@ function OrderModule({ data, update, user, users, logAudit }) {
           <MonthPicker value={month} onChange={(m) => { setMonth(m); setDateFlt(""); }}
             onToday={(d) => { setDateFlt(d); setMonth(monthOf(d)); }}
             onPickDate={(d) => { setDateFlt(d); setMonth(monthOf(d)); }} />
-          {dateFlt && <Badge text={`精確日期：${dateFlt}`} tone="brown" />}
           {dateFlt && <button className="pl-btn small" onClick={() => setDateFlt("")}>清除日期</button>}
           <select className="pl-input" style={{ width: 140 }} value={vFlt} onChange={(e) => setVFlt(e.target.value)}>
             <option value="">全部廠商</option>{data.vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
