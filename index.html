@@ -2711,6 +2711,12 @@ function OrderModule({ data, update, user, users, logAudit }) {
   const monthSum = rows.reduce((a, o) => a + num(o.amount), 0);
   const todaySum = visible.filter((o) => o.date === today).reduce((a, o) => a + num(o.amount), 0);
   const byVendor = {}; rows.forEach((o) => { byVendor[o.vendorId] = (byVendor[o.vendorId] || 0) + num(o.amount); });
+  /* 篩到只剩一個廠商時（例如選了廠商＋切到單日檢視，要看「該廠商當日叫貨明細」），
+     直接自動展開該廠商，不用使用者再多點一次；openVendor 是 "__none__" 代表使用者
+     自己手動收合過，這時候尊重使用者的選擇，不要又自動展開回去 */
+  const soleVendorId = Object.keys(byVendor).length === 1 ? Object.keys(byVendor)[0] : null;
+  const isVendorOpen = (vid) => openVendor === vid || (openVendor === null && soleVendorId === vid);
+  const toggleVendor = (vid) => setOpenVendor(isVendorOpen(vid) ? "__none__" : vid);
   const monthlyUnpaid = visible.filter((o) => o.billing === "月結" && o.payStatus !== "已付款").reduce((a, o) => a + num(o.amount), 0);
   const overdue = visible.filter((o) => o.payStatus !== "已付款" && o.dueDate && cmpDate(o.dueDate, today) < 0);
   const overdueSum = overdue.reduce((a, o) => a + num(o.amount), 0);
@@ -2798,20 +2804,22 @@ function OrderModule({ data, update, user, users, logAudit }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 12, marginBottom: 14 }}>
         <KPI label="今日叫貨總額" value={fmt(todaySum)} />
-        <KPI label="本月叫貨總額" value={fmt(monthSum)} />
+        <KPI label={dateFlt ? `${dateFlt} 叫貨總額` : "本月叫貨總額"} value={fmt(monthSum)} />
         <KPI label="月結待付款總額" value={fmt(monthlyUnpaid)} />
         <KPI label="已逾期未付款" value={fmt(overdueSum)} tone={overdueSum > 0 ? "red" : "green"} sub={overdue.length ? `${overdue.length} 筆逾期` : "無逾期款項"} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 14 }}>
         <div className="pl-card" style={{ padding: 14 }}>
-          <div className="pl-serif" style={{ fontWeight: 600, marginBottom: 8 }}>本月各廠商叫貨</div>
-          {Object.keys(byVendor).length === 0 ? <Empty /> : Object.entries(byVendor).sort((a, b) => b[1] - a[1]).map(([vid, amt]) => {
-            const opened = openVendor === vid;
+          <div className="pl-serif" style={{ fontWeight: 600, marginBottom: 8 }}>
+            {dateFlt ? `${dateFlt} 各廠商叫貨` : "本月各廠商叫貨"}
+          </div>
+          {Object.keys(byVendor).length === 0 ? <Empty text={dateFlt ? "當天沒有叫貨紀錄" : "本月尚無叫貨紀錄"} /> : Object.entries(byVendor).sort((a, b) => b[1] - a[1]).map(([vid, amt]) => {
+            const opened = isVendorOpen(vid);
             const detail = rows.filter((o) => o.vendorId === vid).sort((a, b) => cmpDate(a.date, b.date));
             return (
               <div key={vid} style={{ borderBottom: `1px dashed ${T.line}` }}>
-                <div onClick={() => setOpenVendor(opened ? null : vid)}
+                <div onClick={() => toggleVendor(vid)}
                   style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13.5, cursor: "pointer" }}>
                   <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ color: T.sub, fontSize: 10 }}>{opened ? "▼" : "▶"}</span>
@@ -2823,9 +2831,10 @@ function OrderModule({ data, update, user, users, logAudit }) {
                 {opened && (
                   <div style={{ padding: "2px 0 8px 22px" }}>
                     {detail.map((o) => (
-                      <div key={o.id} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: T.ink }}>
-                        <span style={{ fontVariantNumeric: "tabular-nums", color: T.sub }}>{o.date}</span>
-                        <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(num(o.amount))}</span>
+                      <div key={o.id} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: T.ink, gap: 8 }}>
+                        <span style={{ fontVariantNumeric: "tabular-nums", color: T.sub, whiteSpace: "nowrap" }}>{o.date}</span>
+                        <span style={{ flex: 1, color: T.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.items || "—"}</span>
+                        <span style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmt(num(o.amount))}</span>
                       </div>
                     ))}
                   </div>
