@@ -4073,6 +4073,22 @@ function FixedMaster({ data, update }) {
     setForm({ categoryId: "", item: "", amount: "", payMethod: "銀行轉帳" });
   };
   const setAmt = (f, v) => update((d) => ({ ...d, [listKey]: d[listKey].map((x) => x.id === f.id ? { ...x, amount: num(v) } : x) }));
+  /* 改類別時，這個項目過去用「帶入固定支出／收入」建立的歷史紀錄（fixedItemId 對到這筆）
+     不會自動跟著換類別（每筆紀錄的類別是建立當下寫死的快照），問使用者要不要一併改掉，
+     避免類別設定改對了、但過去帶入的資料還留在舊類別下沒被抓進固定支出／收入統計 */
+  const setCategory = (f, newCategoryId) => {
+    if (!newCategoryId || newCategoryId === f.categoryId) return;
+    const dataKey = isExp ? "expenses" : "incomes";
+    const relatedCount = (data[dataKey] || []).filter((r) => r.fixedItemId === f.id).length;
+    const alsoFixPast = relatedCount > 0 && confirm(
+      `「${f.item}」目前有 ${relatedCount} 筆從這個固定${isExp ? "支出" : "收入"}項目帶入的歷史紀錄，類別都還是舊的。\n是否一併把這 ${relatedCount} 筆歷史紀錄的類別也改成新類別？\n（選「取消」則只改主檔設定，之後新帶入的才會用新類別，歷史紀錄需自行到每日收支逐筆調整）`
+    );
+    update((d) => ({
+      ...d,
+      [listKey]: (d[listKey] || []).map((x) => x.id === f.id ? { ...x, categoryId: newCategoryId } : x),
+      ...(alsoFixPast ? { [dataKey]: (d[dataKey] || []).map((r) => r.fixedItemId === f.id ? { ...r, categoryId: newCategoryId } : r) } : {}),
+    }));
+  };
   const toggle = (f) => update((d) => ({ ...d, [listKey]: d[listKey].map((x) => x.id === f.id ? { ...x, active: !x.active } : x) }));
   const remove = (f) => { if (confirm(`刪除固定項目「${f.item}」？`)) update((d) => ({ ...d, [listKey]: d[listKey].filter((x) => x.id !== f.id) })); };
   /* items 是依門店篩選過的子集合，拖曳排序要用 id 去底下完整的清單裡操作，
@@ -4130,7 +4146,12 @@ function FixedMaster({ data, update }) {
                     <DragHandle draggable onDragStart={() => { dragRef.current = { id: f.id, idx }; }} />
                   </td>
                 )}
-                <td>{catOf(f.categoryId)}</td>
+                <td style={{ minWidth: 150 }}>
+                  <select className="pl-input" value={f.categoryId} onChange={(e) => setCategory(f, e.target.value)}>
+                    {!cats.some((c) => c.id === f.categoryId) && <option value={f.categoryId}>{catOf(f.categoryId)}（已停用）</option>}
+                    {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </td>
                 <td>{f.item}</td>
                 <td className="num" style={{ width: 180 }}>
                   <input className="pl-input" style={{ textAlign: "right" }} defaultValue={f.amount} inputMode="decimal"
