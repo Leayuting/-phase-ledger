@@ -100,10 +100,14 @@ const SALES_STATUS = ["草稿", "待審核", "已審核", "退回修改"];
 const EXP_STATUS = ["草稿", "待審核", "過審", "已退回"];
 /* 單據／憑證管理：不強制任何單一類型（如發票）為必填，只強制「要嘛選一種類型、要嘛選無憑證＋填原因」 */
 const DOC_TYPES = ["發票", "收據", "電子發票", "免用統一發票收據", "請款單", "估價單", "匯款證明", "交易明細", "電子憑證", "其他佐證文件"];
-/* 這幾個支出類別在營運總覽會被獨立列成一張卡片（租金依地址拆三筆＋營業稅＋電費／水費／勞保／勞退／健保／人事成本），
-   不算進「每日支出」殘值桶；每日收支頁面的「固定支出」也用同一份名單判斷，兩邊金額才會對得起來，
-   不受「是否透過帶入固定支出功能建立」這件事影響（手動輸入的電費跟帶入的電費算法要一致） */
-const ITEMIZED_EXP_CAT_NAMES = ["租金-119號", "租金-121號", "租金-烘豆場", "營業稅", "電費", "水費", "勞保", "勞退", "健保", "人事成本"];
+/* 這幾個支出類別在營運總覽會被獨立列成一張卡片（租金＋營業稅＋電費／水費／勞保／勞退／健保／人事成本），
+   不算進「每日支出」殘值桶；每日收支頁面的「固定支出」也用同一份判斷邏輯，兩邊金額才會對得起來，
+   不受「是否透過帶入固定支出功能建立」這件事影響（手動輸入的電費跟帶入的電費算法要一致）。
+   「租金」統一納入固定支出管理：不論是舊的通用「租金」類別，或依地址拆分的「租金-119號」
+   「租金-121號」「租金-烘豆場」等任何以「租金」開頭命名的類別，一律視為固定支出的租金項目，
+   不用逐一把每個租金類別名稱都寫死在這份清單裡，之後主檔管理新增／改名租金類別也會自動生效 */
+const ITEMIZED_EXP_CAT_NAMES = ["營業稅", "電費", "水費", "勞保", "勞退", "健保", "人事成本"];
+const isItemizedExpCatName = (name) => (name || "").startsWith("租金") || ITEMIZED_EXP_CAT_NAMES.includes(name);
 const NO_DOC = "無憑證";
 /* 驗證憑證欄位：回傳錯誤訊息字串，沒問題回傳 null。「無憑證」可直接選擇送出，
    不強制填寫原因、也不需上傳附件；之後若取得憑證，仍可另外補上傳附件，不影響原始帳務資料 */
@@ -833,13 +837,11 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
   /* 其他收入來源＝官網收入＋其他收入＋勤美設備出租收入合併，首頁只顯示一張卡片，點擊才展開細項 */
   const otherIncSourceTotal = onlineInc + otherInc + equipInc;
 
-  /* 支出拆分：租金依地址拆三筆、營業稅、電費、水費、勞保、勞退、健保、人事成本各自獨立列出，
-     其餘一律歸入「每日支出」（原本統稱一般支出的殘值桶） */
-  const rentCatId = {
-    n119: data.categories.find((c) => c.name === "租金-119號")?.id,
-    n121: data.categories.find((c) => c.name === "租金-121號")?.id,
-    roast: data.categories.find((c) => c.name === "租金-烘豆場")?.id,
-  };
+  /* 支出拆分：租金、營業稅、電費、水費、勞保、勞退、健保、人事成本各自獨立列出，其餘一律歸入
+     「每日支出」（原本統稱一般支出的殘值桶）。租金統一納入固定支出管理：不論是舊的通用「租金」
+     類別，或依地址拆分的「租金-119號」「租金-121號」「租金-烘豆場」等任何以「租金」開頭命名的
+     類別，都算進租金卡片，不用把每個租金類別名稱寫死，主檔管理新增／改名租金類別也會自動生效 */
+  const rentCats = data.categories.filter((c) => c.name.startsWith("租金"));
   /* 「稅金」跟「營業稅」是不同類別：稅金一律算在「每日支出」殘值桶裡，只有「營業稅」才獨立列出 */
   const taxCatIds = [data.categories.find((c) => c.name === "營業稅")?.id].filter(Boolean);
   const namedExpCatId = (name) => data.categories.find((c) => c.name === name)?.id;
@@ -850,19 +852,18 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
   const healthInsCatId = namedExpCatId("健保");
   const payrollCatId = namedExpCatId("人事成本");
   const expByCat = (id) => expM.filter((e) => e.categoryId === id);
-  const rent119Recs = expByCat(rentCatId.n119), rent121Recs = expByCat(rentCatId.n121), rentRoastRecs = expByCat(rentCatId.roast);
+  const sumAmt = (recs) => recs.reduce((a, e) => a + num(e.amount), 0);
   const taxRecs = expM.filter((e) => taxCatIds.includes(e.categoryId));
   const elecRecs = expByCat(elecCatId), waterRecs = expByCat(waterCatId);
   const laborInsRecs = expByCat(laborInsCatId), pensionRecs = expByCat(pensionCatId), healthInsRecs = expByCat(healthInsCatId);
   const payrollRecs = expByCat(payrollCatId);
-  const sumAmt = (recs) => recs.reduce((a, e) => a + num(e.amount), 0);
-  const rent119 = sumAmt(rent119Recs), rent121 = sumAmt(rent121Recs), rentRoast = sumAmt(rentRoastRecs);
-  /* 租金總額＝119號＋121號＋烘豆場加總，跟固定支出資料同步（三個子項目一有異動，這裡自動跟著變）；
-     營運總覽預設只顯示這個合併後的「租金」卡片，點擊才展開看三個子項目的明細 */
-  const rentTotal = rent119 + rent121 + rentRoast;
+  /* 租金明細依實際存在的租金類別動態列出（不限固定 3 筆），總額即為這些類別的加總，
+     跟固定支出資料同步；營運總覽預設只顯示這個合併後的「租金」卡片，點擊才展開看各類別明細 */
+  const rentByCat = rentCats.map((c) => ({ id: c.id, name: c.name, amount: sumAmt(expByCat(c.id)) }));
+  const rentTotal = rentByCat.reduce((a, r) => a + r.amount, 0);
   const bizTax = sumAmt(taxRecs), elecFee = sumAmt(elecRecs), waterFee = sumAmt(waterRecs);
   const laborIns = sumAmt(laborInsRecs), pension = sumAmt(pensionRecs), healthIns = sumAmt(healthInsRecs), payroll = sumAmt(payrollRecs);
-  const itemizedExpIds = new Set([rentCatId.n119, rentCatId.n121, rentCatId.roast, ...taxCatIds,
+  const itemizedExpIds = new Set([...rentCats.map((c) => c.id), ...taxCatIds,
     elecCatId, waterCatId, laborInsCatId, pensionCatId, healthInsCatId, payrollCatId].filter(Boolean));
   const dailyExpRecs = expM.filter((e) => !itemizedExpIds.has(e.categoryId));
   const dailyExp = sumAmt(dailyExpRecs);
@@ -991,7 +992,7 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
         <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細（按日彙總）", rowsByDate(dailyExpRecs))} />
         <KPI label="固定支出" value={fmt(fixedExpTotal)} sub="點擊看租金/電費/水費/勞健退/人事/營業稅明細"
           onClick={() => openDetail("固定支出明細", [
-            { item: "租金－119號", amount: rent119 }, { item: "租金－121號", amount: rent121 }, { item: "租金－烘豆場", amount: rentRoast },
+            ...rentByCat.map((r) => ({ item: r.name, amount: r.amount })),
             { item: "電費", amount: elecFee }, { item: "水費", amount: waterFee }, { item: "勞保", amount: laborIns },
             { item: "勞退", amount: pension }, { item: "健保", amount: healthIns }, { item: "人事成本（薪資）", amount: payroll },
             { item: "營業稅", amount: bizTax },
@@ -1981,7 +1982,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
      Dashboard 的「每日支出」用同一份判斷依據，不管這筆是手動輸入還是用「帶入固定支出」
      建立的都一樣算，這樣兩邊金額才會對得起來。這裡的合計已經是目前分頁涵蓋的所有門店
      區塊（例如中山門市＋烘豆場）加總後的結果 */
-  const isItemizedExpCat = (categoryId) => ITEMIZED_EXP_CAT_NAMES.includes(catOf(categoryId));
+  const isItemizedExpCat = (categoryId) => isItemizedExpCatName(catOf(categoryId));
   const countedRows = rows.filter((r) => flt.status === "已退回" || r.status !== "已退回");
   const total = countedRows.reduce((a, r) => a + num(r.amount), 0);
   const fixedTotal = countedRows.filter((r) => isItemizedExpCat(r.categoryId)).reduce((a, r) => a + num(r.amount), 0);
@@ -3427,10 +3428,15 @@ function computeMonthReport(data, month, storeFilter) {
   const tgtSum = storeFilter ? num(tgt[storeFilter]) : data.stores.filter((s) => s.retail).reduce((a, s) => a + num(tgt[s.id]), 0);
 
   const catSum = (name) => expAll.filter((e) => catById[e.categoryId]?.name === name).reduce((a, e) => a + num(e.amount), 0);
+  /* 「租金」統一納入固定支出管理：月報／年報的租金金額，加總所有以「租金」開頭命名的類別
+     （不論是舊的通用「租金」類別，還是依地址拆分的「租金-119號」等），不再只認單一名稱，
+     否則拆分後的租金金額會漏算、跑到「其他支出」裡 */
+  const rentCatNames = data.categories.filter((c) => c.name.startsWith("租金")).map((c) => c.name);
+  const catSumNames = (names) => expAll.filter((e) => names.includes(catById[e.categoryId]?.name)).reduce((a, e) => a + num(e.amount), 0);
   /* 廠商叫貨：月結廠商有未取消的發票調整時（僅限「全部門店」）採發票金額，跟營運總覽口徑一致 */
   const { total: orders, adjustments: ordAdjustments } = adjustedOrderSum(data, month, storeFilter);
   const named = ["租金", "水費", "電費", "瓦斯費", "勞保", "健保", "勞退", "人事成本", "稅金"];
-  const namedSums = Object.fromEntries(named.map((n) => [n, catSum(n)]));
+  const namedSums = Object.fromEntries(named.map((n) => [n, n === "租金" ? catSumNames(rentCatNames) : catSum(n)]));
   const namedTotal = Object.values(namedSums).reduce((a, b) => a + b, 0);
   const expTotal = expAll.reduce((a, e) => a + num(e.amount), 0);
   const otherExp = expTotal - namedTotal;
