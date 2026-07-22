@@ -861,6 +861,11 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
      跟固定支出資料同步；營運總覽預設只顯示這個合併後的「租金」卡片，點擊才展開看各類別明細 */
   const rentByCat = rentCats.map((c) => ({ id: c.id, name: c.name, amount: sumAmt(expByCat(c.id)) }));
   const rentTotal = rentByCat.reduce((a, r) => a + r.amount, 0);
+  /* 固定支出明細裡的「租金」列：有一個以上租金類別時合併成一列顯示總額，點擊可再往下鑽看
+     各類別明細；只有單一租金類別時直接顯示該類別名稱，不需要多一層可點擊但沒有東西可展開 */
+  const rentDetailRow = rentByCat.length > 1
+    ? { item: "租金", amount: rentTotal, rows: rentByCat.map((r) => ({ item: r.name, amount: r.amount })) }
+    : { item: rentByCat[0]?.name || "租金", amount: rentTotal };
   const bizTax = sumAmt(taxRecs), elecFee = sumAmt(elecRecs), waterFee = sumAmt(waterRecs);
   const laborIns = sumAmt(laborInsRecs), pension = sumAmt(pensionRecs), healthIns = sumAmt(healthInsRecs), payroll = sumAmt(payrollRecs);
   const itemizedExpIds = new Set([...rentCats.map((c) => c.id), ...taxCatIds,
@@ -992,7 +997,7 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
         <KPI label="每日支出" value={fmt(dailyExp)} onClick={() => openDetail("每日支出明細（按日彙總）", rowsByDate(dailyExpRecs))} />
         <KPI label="固定支出" value={fmt(fixedExpTotal)} sub="點擊看租金/電費/水費/勞健退/人事/營業稅明細"
           onClick={() => openDetail("固定支出明細", [
-            ...rentByCat.map((r) => ({ item: r.name, amount: r.amount })),
+            rentDetailRow,
             { item: "電費", amount: elecFee }, { item: "水費", amount: waterFee }, { item: "勞保", amount: laborIns },
             { item: "勞退", amount: pension }, { item: "健保", amount: healthIns }, { item: "人事成本（薪資）", amount: payroll },
             { item: "營業稅", amount: bizTax },
@@ -1184,6 +1189,9 @@ function KpiDetailModal({ title, rows, onClose }) {
   const hasStore = rows.some((r) => r.store);
   const hasItem = rows.some((r) => r.item);
   const colCount = [hasDate, hasStore, hasItem, true].filter(Boolean).length;
+  /* 有些項目（例如租金）本身還能再往下拆成好幾個子類別，該列帶 rows（子項目陣列）即可點擊
+     再往下鑽一層，跟首頁摘要為主、需要再展開細節的設計原則一致 */
+  const [subDetail, setSubDetail] = useState(null); // { title, rows }
   return (
     <Modal title={title} onClose={onClose} width={620}>
       <div className="pl-scroll-x" style={{ maxHeight: 420 }}>
@@ -1196,18 +1204,23 @@ function KpiDetailModal({ title, rows, onClose }) {
           </tr></thead>
           <tbody>
             {rows.length === 0 && <tr><td colSpan={colCount}><Empty text="此區間尚無明細" /></td></tr>}
-            {rows.map((r, i) => (
-              <tr key={i}>
-                {hasDate && <td style={{ whiteSpace: "nowrap" }}>{r.date || "—"}</td>}
-                {hasStore && <td>{r.store || "—"}</td>}
-                {hasItem && <td>{r.item}</td>}
-                <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
-              </tr>
-            ))}
+            {rows.map((r, i) => {
+              const expandable = r.rows && r.rows.length > 0;
+              return (
+                <tr key={i} style={expandable ? { cursor: "pointer" } : undefined}
+                  onClick={expandable ? () => setSubDetail({ title: r.item, rows: r.rows }) : undefined}>
+                  {hasDate && <td style={{ whiteSpace: "nowrap" }}>{r.date || "—"}</td>}
+                  {hasStore && <td>{r.store || "—"}</td>}
+                  {hasItem && <td>{r.item}{expandable && <span style={{ color: T.sub, marginLeft: 4 }}>▸</span>}</td>}
+                  <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
       <div style={{ marginTop: 12, textAlign: "right", fontSize: 15, fontWeight: 700 }}>合計 {fmt(total)}</div>
+      {subDetail && <KpiDetailModal title={subDetail.title} rows={subDetail.rows} onClose={() => setSubDetail(null)} />}
     </Modal>
   );
 }
