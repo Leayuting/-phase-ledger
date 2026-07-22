@@ -1315,12 +1315,13 @@ function MonthPicker({ value, onChange, onToday, onPickDate, onClearDate, exactD
       <button className="pl-btn small" onClick={() => onChange(monthOf(todayStr()))}>本月</button>
       <button className="pl-btn small" onClick={() => (onToday ? onToday(todayStr()) : onChange(monthOf(todayStr())))}>今天</button>
       {open && (
-        /* 用 onBlur＋relatedTarget 判斷「焦點離開這個區塊」才關閉，不要用整頁隱形背景板攔截點擊——
-           <input type="date"> 的原生日曆是瀏覽器自己畫的懸浮層，跟頁面上其他元素的點擊判定方式不一樣，
-           背景板很容易把「點原生日曆上的日期」誤判成「點外面」，導致選日期選到一半整個彈窗突然關掉、
-           跳來跳去點不到 */
-        <div className="pl-card" style={{ position: "absolute", top: "110%", left: 0, zIndex: 40, padding: 10, display: "flex", gap: 6 }}
-          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false); }}>
+        /* 不用 onBlur／點外面自動關閉——原生 <input type="date"> 的日曆是瀏覽器（或手機
+           系統）自己畫的懸浮層，不是 DOM 的一部分；日曆打開的當下，輸入框在很多瀏覽器
+           （尤其手機版）會被判定成「失焦」（relatedTarget 是 null，因為焦點跑到不在 DOM
+           裡的原生元件），如果靠 onBlur 判斷「點外面」就會誤判成使用者要關閉，導致日期
+           都還沒選就整個彈窗自己收起來。改成只有「前往」（選好日期）或「取消」（主動關閉）
+           才會收合，開啟期間不受任何 blur、重新渲染、資料刷新影響，手機／電腦都穩定。 */
+        <div className="pl-card" style={{ position: "absolute", top: "110%", left: 0, zIndex: 40, padding: 10, display: "flex", gap: 6, alignItems: "center" }}>
           <input type={isDayMode ? "date" : "month"} className="pl-input"
             value={isDayMode ? draft.replace(/\//g, "-") : draft.slice(0, 7).replace("/", "-")}
             onChange={(e) => {
@@ -1329,6 +1330,7 @@ function MonthPicker({ value, onChange, onToday, onPickDate, onClearDate, exactD
             }}
             onKeyDown={(e) => { if (e.key === "Enter") confirmDraft(); }} autoFocus />
           <button type="button" className="pl-btn small primary" onClick={confirmDraft}>前往</button>
+          <button type="button" className="pl-btn small" onClick={() => setOpen(false)}>取消</button>
         </div>
       )}
     </div>
