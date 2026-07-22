@@ -1598,9 +1598,10 @@ const EXP_EMPTY = {
 /* ────────────────────────────────────────────
    批次明細輸入：一次進入、連續多筆、一次儲存
 ──────────────────────────────────────────────*/
-function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) {
+function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, defaultDate }) {
   const blank = () => ({ key: uid("row"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金", payer: user.name, invoiceNo: "", docType: "", noDocReason: "", note: "" });
-  const [date, setDate] = useState(todayStr());
+  /* 若使用者正在查看單日檢視的某一天，新增時直接帶入那一天，而不是固定帶今天 */
+  const [date, setDate] = useState(defaultDate || todayStr());
   const [rows, setRows] = useState([blank(), blank(), blank()]);
   const cats = data.categories.filter((c) => c.active && c.id !== ORDER_CAT_ID);
   const vens = data.vendors.filter((v) => v.active !== false);
@@ -1719,9 +1720,10 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
 
 /* 批次新增收入：跟批次新增支出同一套操作邏輯（一次進入、連續多筆、一次儲存），
    統一收入／支出頁面的新增方式；差別只在收入沒有廠商欄位、類別對照的是 incomeCategories */
-function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit }) {
+function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, defaultDate }) {
   const blank = () => ({ key: uid("row"), categoryName: "", item: "", amount: "", payMethod: "現金", payer: user.name, invoiceNo: "", docType: "", noDocReason: "", note: "" });
-  const [date, setDate] = useState(todayStr());
+  /* 若使用者正在查看單日檢視的某一天，新增時直接帶入那一天，而不是固定帶今天 */
+  const [date, setDate] = useState(defaultDate || todayStr());
   const [rows, setRows] = useState([blank(), blank(), blank()]);
   const cats = (data.incomeCategories || []).filter((c) => c.active);
 
@@ -1831,9 +1833,10 @@ function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit }) {
   );
 }
 
-function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit }) {
+function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit, defaultDate }) {
   const blank = () => ({ key: uid("row"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", docType: "", noDocReason: "", note: "" });
-  const [date, setDate] = useState(todayStr());
+  /* 若使用者正在查看單日檢視的某一天，新增時直接帶入那一天，而不是固定帶今天 */
+  const [date, setDate] = useState(defaultDate || todayStr());
   const [rows, setRows] = useState([blank(), blank(), blank()]);
   const vens = data.vendors.filter((v) => v.active !== false);
 
@@ -2167,7 +2170,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
       </>}
 
       {batchOpenFor && (
-        <BatchExpenseModal data={data} user={user} curStore={batchOpenFor} nameOf={nameOf}
+        <BatchExpenseModal data={data} user={user} curStore={batchOpenFor} nameOf={nameOf} defaultDate={flt.date}
           onClose={() => setBatchOpenFor(null)}
           onCommit={(recs, newCats) => { update((d) => ({ ...d, categories: [...d.categories, ...(newCats || [])], expenses: [...d.expenses, ...recs] })); setBatchOpenFor(null); }} />
       )}
@@ -2467,7 +2470,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
       )}
 
       {batchOpenFor && (
-        <BatchIncomeModal data={data} user={user} curStore={batchOpenFor} nameOf={nameOf}
+        <BatchIncomeModal data={data} user={user} curStore={batchOpenFor} nameOf={nameOf} defaultDate={flt.date}
           onClose={() => setBatchOpenFor(null)}
           onCommit={(recs, newCats) => { update((d) => ({ ...d, incomeCategories: [...(d.incomeCategories || []), ...(newCats || [])], incomes: [...(d.incomes || []), ...recs] })); setBatchOpenFor(null); }} />
       )}
@@ -2855,7 +2858,7 @@ function OrderModule({ data, update, user, users, logAudit }) {
       </>}
 
       {batchOpenFor && (
-        <BatchOrderModal data={data} user={user} curStore={batchOpenFor} nameOf={nameOf}
+        <BatchOrderModal data={data} user={user} curStore={batchOpenFor} nameOf={nameOf} defaultDate={dateFlt}
           onClose={() => setBatchOpenFor(null)}
           onCommit={(recs) => { update((d) => ({ ...d, orders: [...d.orders, ...recs] })); setBatchOpenFor(null); }} />
       )}
