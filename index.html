@@ -1717,6 +1717,120 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit }) 
   );
 }
 
+/* 批次新增收入：跟批次新增支出同一套操作邏輯（一次進入、連續多筆、一次儲存），
+   統一收入／支出頁面的新增方式；差別只在收入沒有廠商欄位、類別對照的是 incomeCategories */
+function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit }) {
+  const blank = () => ({ key: uid("row"), categoryName: "", item: "", amount: "", payMethod: "現金", payer: user.name, invoiceNo: "", docType: "", noDocReason: "", note: "" });
+  const [date, setDate] = useState(todayStr());
+  const [rows, setRows] = useState([blank(), blank(), blank()]);
+  const cats = (data.incomeCategories || []).filter((c) => c.active);
+
+  const setRow = (key, k, v) => setRows(rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const patchRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
+  const addRow = () => setRows([...rows, blank()]);
+  const delRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
+  const filled = rows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
+  const total = filled.reduce((a, r) => a + num(r.amount), 0);
+
+  const validate = () => {
+    if (!validDate(date)) { alert("請填寫正確日期（YYYY/MM/DD）"); return null; }
+    if (filled.length === 0) { alert("尚未輸入任何明細。"); return null; }
+    for (let i = 0; i < filled.length; i++) {
+      const r = filled[i];
+      const n = rows.indexOf(r) + 1;
+      if (!r.categoryName.trim()) { alert(`第 ${n} 列：請選擇或輸入收入類別`); return null; }
+      if (!r.item.trim()) { alert(`第 ${n} 列：請填寫收入項目`); return null; }
+      if (num(r.amount) <= 0) { alert(`第 ${n} 列：金額需大於 0`); return null; }
+      const docErr = validateDoc(r);
+      if (docErr) { alert(`第 ${n} 列：${docErr}`); return null; }
+    }
+    return filled;
+  };
+
+  const save = () => {
+    const valid = validate(); if (!valid) return;
+    /* 類別名稱解析：既有類別直接對應，新名稱自動建立 */
+    const newCats = [];
+    const resolveCat = (name) => {
+      const n = name.trim();
+      const hit = (data.incomeCategories || []).find((c) => c.name === n) || newCats.find((c) => c.name === n);
+      if (hit) return hit.id;
+      const c = { id: uid("cat"), name: n, active: true };
+      newCats.push(c);
+      return c.id;
+    };
+    const dayClosed = isDayClosed(data, date, curStore);
+    const recs = valid.map((r) => ({
+      ...INC_EMPTY, id: uid("in"), date, storeId: curStore,
+      categoryId: resolveCat(r.categoryName), item: r.item.trim(), amount: num(r.amount),
+      payMethod: r.payMethod, payer: r.payer || user.name, invoiceNo: r.invoiceNo.trim(),
+      docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "", note: r.note.trim(),
+      /* 現金收款免審核直接入帳，其餘一律待審核，不再讓使用者自己選草稿／送審 */
+      status: autoStatus(r.payMethod), createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
+      postClose: dayClosed,
+    }));
+    if (newCats.length && !confirm(`將自動新增收入類別：${newCats.map((c) => c.name).join("、")}。確定？`)) return;
+    onCommit(recs, newCats);
+  };
+
+  return (
+    <Modal title="批次新增收入" onClose={onClose} width={900}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end", marginBottom: 14 }}>
+        <Field label="收入日期（本批共用）" required>
+          <DateInput style={{ width: 150 }} value={date} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+        <Field label="門店"><input className="pl-input" style={{ width: 110 }} value={nameOf(curStore)} disabled /></Field>
+        <div style={{ marginLeft: "auto", fontSize: 13.5, color: T.sub, paddingBottom: 8 }}>
+          已輸入 <b style={{ color: T.ink }}>{filled.length}</b> 筆・合計 <b style={{ color: T.ink }}>{fmt(total)}</b>
+        </div>
+      </div>
+
+      <div className="pl-scroll-x" style={{ maxHeight: "48vh", overflowY: "auto" }}>
+        <table className="pl-table">
+          <thead><tr>
+            <th style={{ width: 30 }}>#</th><th>類別 *</th><th>項目 *</th>
+            <th className="num">金額 *</th><th>收款方式</th><th>經手人</th><th>發票號碼</th><th>單據／憑證 *</th><th>備註</th><th></th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.key}>
+                <td style={{ color: T.sub }}>{i + 1}</td>
+                <td style={{ minWidth: 120 }}>
+                  <input className="pl-input" list="dl-batch-inccat" value={r.categoryName}
+                    onChange={(e) => setRow(r.key, "categoryName", e.target.value)} placeholder="選擇或輸入" />
+                </td>
+                <td style={{ minWidth: 140 }}><input className="pl-input" value={r.item} onChange={(e) => setRow(r.key, "item", e.target.value)} placeholder="收入項目" /></td>
+                <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} inputMode="decimal" value={r.amount} onChange={(e) => setRow(r.key, "amount", e.target.value)} placeholder="0" /></td>
+                <td style={{ minWidth: 110 }}>
+                  <select className="pl-input" value={r.payMethod} onChange={(e) => setRow(r.key, "payMethod", e.target.value)}>
+                    {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
+                  </select>
+                </td>
+                <td style={{ minWidth: 80 }}><input className="pl-input" value={r.payer} onChange={(e) => setRow(r.key, "payer", e.target.value)} /></td>
+                <td style={{ minWidth: 100 }}><input className="pl-input" value={r.invoiceNo} onChange={(e) => setRow(r.key, "invoiceNo", e.target.value)} /></td>
+                <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchRow(r.key, patch)} />
+                <td style={{ minWidth: 100 }}><input className="pl-input" value={r.note} onChange={(e) => setRow(r.key, "note", e.target.value)} /></td>
+                <td><button className="pl-btn small danger" onClick={() => delRow(r.key)}>✕</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <datalist id="dl-batch-inccat">{cats.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+
+      <div style={{ fontSize: 12.5, color: T.sub, marginTop: 8 }}>收款方式選「現金」的項目會直接入帳；其餘會進入待審核。</div>
+      <div style={{ display: "flex", alignItems: "center", marginTop: 12 }}>
+        <button className="pl-btn" onClick={addRow}>＋ 新增一列</button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button className="pl-btn" onClick={onClose}>取消</button>
+          <button className="pl-btn primary" style={{ background: T.green, borderColor: T.green }} onClick={save}>全部送出</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit }) {
   const blank = () => ({ key: uid("row"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", docType: "", noDocReason: "", note: "" });
   const [date, setDate] = useState(todayStr());
@@ -2124,21 +2238,38 @@ const INC_EMPTY = {
 
 function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logApproval }) {
   const [editing, setEditing] = useState(null);
-  const [month, setMonth] = usePersisted("pl_income_month", monthOf(todayStr()));
+  const [batchOpenFor, setBatchOpenFor] = useState(null); // storeId：哪個門店區塊的「新增收入」批次視窗開著
   const [selected, setSelected] = useState(new Set());
   const [fixedModalOpenFor, setFixedModalOpenFor] = useState(null); // storeId：哪個門店區塊的「帶入固定收入」視窗開著
+  /* 篩選列跟每日支出頁面統一：月份／單日切換＋搜尋（類別／項目／金額）＋經手人＋狀態，
+     只記住月份篩選，其他篩選條件重新整理後清空，避免被舊篩選卡住（跟支出頁面同一套邏輯） */
+  const [flt, setFlt] = useState(() => {
+    let month = monthOf(todayStr());
+    try { const v = localStorage.getItem("pl_income_month"); if (v) month = JSON.parse(v); } catch (e) { /* 忽略 */ }
+    return { month, date: "", q: "", payer: "", status: "" };
+  });
+  useEffect(() => {
+    try { localStorage.setItem("pl_income_month", JSON.stringify(flt.month)); } catch (e) { /* 忽略 */ }
+  }, [flt.month]);
+  const fset = (k) => (e) => setFlt({ ...flt, [k]: e.target.value });
   const cats = data.incomeCategories.filter((c) => c.active);
   const catOf = (id) => data.incomeCategories.find((c) => c.id === id)?.name || "—";
   const viewStoreIds = blockStores.map((s) => s.id);
 
-  const rows = (data.incomes || []).filter((r) =>
-    monthOf(r.date) === month && viewStoreIds.includes(r.storeId) &&
-    perm.canSeeRecord(user, r)
-  ).sort((a, b) => cmpDate(a.date, b.date));
-  /* 合計排除「已退回」，跟營運總覽的口徑一致；已退回紀錄本身仍留在表格裡可見，只是不計入合計。
-     另外把固定收入（有 fixedItemId，代表是從「主檔管理→固定收入項目」帶入的紀錄）獨立列出。
-     這裡的合計已經是目前分頁涵蓋的所有門店區塊（例如中山門市＋烘豆場）加總後的結果 */
-  const countedRows = rows.filter((r) => r.status !== "已退回");
+  const rows = (data.incomes || []).filter((r) => {
+    if (flt.date ? r.date !== flt.date : monthOf(r.date) !== flt.month) return false;
+    if (!viewStoreIds.includes(r.storeId)) return false;
+    if (!perm.canSeeRecord(user, r)) return false;
+    if (flt.q && ![catOf(r.categoryId), r.item || "", String(num(r.amount))].some((s) => s.includes(flt.q))) return false;
+    if (flt.payer && !(r.payer || "").includes(flt.payer)) return false;
+    if (flt.status && r.status !== flt.status) return false;
+    return true;
+  }).sort((a, b) => cmpDate(a.date, b.date));
+  /* 合計排除「已退回」（除非使用者特意篩選只看已退回），跟營運總覽及每日支出頁面的口徑一致；
+     已退回紀錄本身仍留在表格裡可見，只是不計入合計。另外把固定收入（有 fixedItemId，代表是從
+     「主檔管理→固定收入項目」帶入的紀錄）獨立列出。這裡的合計已經是目前分頁涵蓋的所有門店
+     區塊（例如中山門市＋烘豆場）加總後的結果 */
+  const countedRows = rows.filter((r) => flt.status === "已退回" || r.status !== "已退回");
   const total = countedRows.reduce((a, r) => a + num(r.amount), 0);
   const fixedTotal = countedRows.filter((r) => r.fixedItemId).reduce((a, r) => a + num(r.amount), 0);
   const generalTotal = total - fixedTotal;
@@ -2207,12 +2338,12 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
      填寫（見 FixedBringInModal） */
   const fixedTodoFor = (storeId) => {
     const forStore = (data.fixedIncomeItems || []).filter((f) => f.active && f.storeId === storeId);
-    const done = forStore.filter((f) => (data.incomes || []).some((r) => r.fixedItemId === f.id && monthOf(r.date) === month));
+    const done = forStore.filter((f) => (data.incomes || []).some((r) => r.fixedItemId === f.id && monthOf(r.date) === flt.month));
     return { forStore, todo: forStore.filter((f) => !done.includes(f)) };
   };
 
   const commitFixed = (picked, storeId) => {
-    const date = month + "/01";
+    const date = flt.month + "/01";
     const dayClosed = isDayClosed(data, date, storeId);
     const recs = picked.map((f) => ({
       /* 固定收入項目本來就是預先核准的常態收入，帶入時跳過草稿／待審核，直接入帳 */
@@ -2231,7 +2362,15 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
   return (
     <div>
       <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-        <MonthPicker value={month} onChange={setMonth} />
+        <MonthPicker value={flt.month} exactDate={flt.date} onChange={(m) => setFlt({ ...flt, month: m, date: "" })}
+          onToday={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })}
+          onPickDate={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })}
+          onClearDate={() => setFlt({ ...flt, date: "" })} />
+        <input className="pl-input" style={{ width: 180 }} placeholder="搜尋類別／項目／金額" value={flt.q} onChange={fset("q")} />
+        <input className="pl-input" style={{ width: 100 }} placeholder="經手人" value={flt.payer} onChange={fset("payer")} />
+        <select className="pl-input" style={{ width: 110 }} value={flt.status} onChange={fset("status")}>
+          <option value="">全部狀態</option>{EXP_STATUS.map((s) => <option key={s}>{s}</option>)}
+        </select>
         <div style={{ marginLeft: "auto", color: T.sub, fontSize: 13 }}>
           共 {rows.length} 筆・一般收入 <b style={{ color: T.ink }}>{fmt(generalTotal)}</b>・固定收入 <b style={{ color: T.brown }}>{fmt(fixedTotal)}</b>・合計 <b style={{ color: T.green }}>{fmt(total)}</b>
         </div>
@@ -2247,7 +2386,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
 
       {blockStores.map((s) => {
         const bRows = rows.filter((r) => r.storeId === s.id);
-        const bCounted = bRows.filter((r) => r.status !== "已退回");
+        const bCounted = bRows.filter((r) => flt.status === "已退回" || r.status !== "已退回");
         const bTotal = bCounted.reduce((a, r) => a + num(r.amount), 0);
         const bFixedTotal = bCounted.filter((r) => r.fixedItemId).reduce((a, r) => a + num(r.amount), 0);
         const bGeneralTotal = bTotal - bFixedTotal;
@@ -2264,8 +2403,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
                   {bFixedTodo.length === 0 ? "✓ 固定收入已帶入" : `帶入固定收入（${bFixedTodo.length}）`}
                 </button>
               )}
-              <button className="pl-btn primary small" style={{ background: T.green, borderColor: T.green }}
-                onClick={() => setEditing({ ...INC_EMPTY, id: null, date: todayStr(), storeId: s.id, payer: user.name, status: "草稿" })}>
+              <button className="pl-btn primary small" style={{ background: T.green, borderColor: T.green }} onClick={() => setBatchOpenFor(s.id)}>
                 ＋ 新增收入
               </button>
               <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.sub }}>
@@ -2288,7 +2426,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
           <div style={{ display: "grid", gap: 6 }}>
             {blockStores.map((s) => (
               <StoreRow key={s.id} label={`${s.name}小計`}
-                value={fmt(rows.filter((r) => r.storeId === s.id && r.status !== "已退回").reduce((a, r) => a + num(r.amount), 0))} />
+                value={fmt(rows.filter((r) => r.storeId === s.id && (flt.status === "已退回" || r.status !== "已退回")).reduce((a, r) => a + num(r.amount), 0))} />
             ))}
             <StoreRow label={`${nameOf(blockStores[0].id)}合計（${blockStores.map((s) => s.name).join("＋")}）`} value={fmt(total)} strong />
           </div>
@@ -2328,10 +2466,16 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
         </Modal>
       )}
 
+      {batchOpenFor && (
+        <BatchIncomeModal data={data} user={user} curStore={batchOpenFor} nameOf={nameOf}
+          onClose={() => setBatchOpenFor(null)}
+          onCommit={(recs, newCats) => { update((d) => ({ ...d, incomeCategories: [...(d.incomeCategories || []), ...(newCats || [])], incomes: [...(d.incomes || []), ...recs] })); setBatchOpenFor(null); }} />
+      )}
+
       {fixedModalOpenFor && (() => {
         const { todo } = fixedTodoFor(fixedModalOpenFor);
         return (
-          <FixedBringInModal items={todo} month={month} storeName={nameOf(fixedModalOpenFor)} catOf={catOf}
+          <FixedBringInModal items={todo} month={flt.month} storeName={nameOf(fixedModalOpenFor)} catOf={catOf}
             onClose={() => setFixedModalOpenFor(null)} onCommit={(picked) => commitFixed(picked, fixedModalOpenFor)} />
         );
       })()}
