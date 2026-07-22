@@ -853,19 +853,24 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
   const payrollCatId = namedExpCatId("人事成本");
   const expByCat = (id) => expM.filter((e) => e.categoryId === id);
   const sumAmt = (recs) => recs.reduce((a, e) => a + num(e.amount), 0);
+  /* 支出紀錄明細（逐筆列出日期／門店／品項／金額），用在固定支出各類別點擊再往下鑽看
+     實際是哪幾筆組成這個總額 */
+  const rowsFromExp = (recs) => recs.map((e) => ({ date: e.date, store: nameOf(e.storeId), item: e.item, amount: num(e.amount) })).sort((a, b) => cmpDate(a.date, b.date));
   const taxRecs = expM.filter((e) => taxCatIds.includes(e.categoryId));
   const elecRecs = expByCat(elecCatId), waterRecs = expByCat(waterCatId);
   const laborInsRecs = expByCat(laborInsCatId), pensionRecs = expByCat(pensionCatId), healthInsRecs = expByCat(healthInsCatId);
   const payrollRecs = expByCat(payrollCatId);
   /* 租金明細依實際存在的租金類別動態列出（不限固定 3 筆），總額即為這些類別的加總，
-     跟固定支出資料同步；營運總覽預設只顯示這個合併後的「租金」卡片，點擊才展開看各類別明細 */
-  const rentByCat = rentCats.map((c) => ({ id: c.id, name: c.name, amount: sumAmt(expByCat(c.id)) }));
+     跟固定支出資料同步；營運總覽預設只顯示這個合併後的「租金」卡片，點擊才展開看各類別明細，
+     每個類別再點一次可以繼續往下看是哪幾筆支出組成的 */
+  const rentByCat = rentCats.map((c) => ({ id: c.id, name: c.name, amount: sumAmt(expByCat(c.id)), rows: rowsFromExp(expByCat(c.id)) }));
   const rentTotal = rentByCat.reduce((a, r) => a + r.amount, 0);
   /* 固定支出明細裡的「租金」列：有一個以上租金類別時合併成一列顯示總額，點擊可再往下鑽看
-     各類別明細；只有單一租金類別時直接顯示該類別名稱，不需要多一層可點擊但沒有東西可展開 */
+     各類別明細；只有單一租金類別時直接顯示該類別名稱本身可再點擊看逐筆明細，不需要多一層
+     只有一個項目的中介清單 */
   const rentDetailRow = rentByCat.length > 1
-    ? { item: "租金", amount: rentTotal, rows: rentByCat.map((r) => ({ item: r.name, amount: r.amount })) }
-    : { item: rentByCat[0]?.name || "租金", amount: rentTotal };
+    ? { item: "租金", amount: rentTotal, rows: rentByCat.map((r) => ({ item: r.name, amount: r.amount, rows: r.rows })) }
+    : { item: rentByCat[0]?.name || "租金", amount: rentTotal, rows: rentByCat[0]?.rows || [] };
   const bizTax = sumAmt(taxRecs), elecFee = sumAmt(elecRecs), waterFee = sumAmt(waterRecs);
   const laborIns = sumAmt(laborInsRecs), pension = sumAmt(pensionRecs), healthIns = sumAmt(healthInsRecs), payroll = sumAmt(payrollRecs);
   const itemizedExpIds = new Set([...rentCats.map((c) => c.id), ...taxCatIds,
@@ -998,9 +1003,10 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
         <KPI label="固定支出" value={fmt(fixedExpTotal)} sub="點擊看租金/電費/水費/勞健退/人事/營業稅明細"
           onClick={() => openDetail("固定支出明細", [
             rentDetailRow,
-            { item: "電費", amount: elecFee }, { item: "水費", amount: waterFee }, { item: "勞保", amount: laborIns },
-            { item: "勞退", amount: pension }, { item: "健保", amount: healthIns }, { item: "人事成本（薪資）", amount: payroll },
-            { item: "營業稅", amount: bizTax },
+            { item: "電費", amount: elecFee, rows: rowsFromExp(elecRecs) }, { item: "水費", amount: waterFee, rows: rowsFromExp(waterRecs) },
+            { item: "勞保", amount: laborIns, rows: rowsFromExp(laborInsRecs) }, { item: "勞退", amount: pension, rows: rowsFromExp(pensionRecs) },
+            { item: "健保", amount: healthIns, rows: rowsFromExp(healthInsRecs) }, { item: "人事成本（薪資）", amount: payroll, rows: rowsFromExp(payrollRecs) },
+            { item: "營業稅", amount: bizTax, rows: rowsFromExp(taxRecs) },
           ])} />
         <KPI label="總支出" value={fmt(totalExp)} onClick={() => openDetail("總支出組成", [
           { item: "廠商叫貨", amount: ordSum }, { item: "每日支出", amount: dailyExp }, { item: "固定支出（租金＋電費＋水費＋勞健退＋人事＋營業稅）", amount: fixedExpTotal },
