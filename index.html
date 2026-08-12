@@ -1950,7 +1950,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval, month
   /* 月份改用全域共用狀態（見 App），跳頁面（營運總覽／每日收支／廠商叫貨／每日營收／月報）
      仍停留在同一個月份；只有單日檢視、搜尋、付款人、狀態這些篩選條件留在本頁自己的 flt，
      不記住、重新整理後清空，避免被舊篩選卡住 */
-  const [flt, setFlt] = useState({ date: "", storeId: "", q: "", payer: "", status: "" });
+  const [flt, setFlt] = useState({ date: "", storeId: "", q: "", status: "" });
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
   /* 門店分頁只列「會計主體」層級：烘豆場不再單獨列成一個可選門店分頁，
@@ -1972,7 +1972,6 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval, month
     if (!perm.canSeeRecord(user, r)) return false;
     if (!viewStoreIds.includes(r.storeId)) return false;
     if (flt.q && ![catOf(r.categoryId), venOf(r.vendorId), r.item || "", String(num(r.amount))].some((s) => s.includes(flt.q))) return false;
-    if (flt.payer && !(r.payer || "").includes(flt.payer)) return false;
     if (flt.status && r.status !== flt.status) return false;
     return true;
   }).sort((a, b) => cmpDate(a.date, b.date));
@@ -2114,7 +2113,6 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval, month
           onPickDate={(d) => { setMonth(monthOf(d)); setFlt({ ...flt, date: d }); }}
           onClearDate={() => setFlt({ ...flt, date: "" })} />
         <input className="pl-input" style={{ width: 180 }} placeholder="搜尋類別／廠商／品項／金額" value={flt.q} onChange={fset("q")} />
-        <input className="pl-input" style={{ width: 100 }} placeholder="付款人" value={flt.payer} onChange={fset("payer")} />
         <select className="pl-input" style={{ width: 110 }} value={flt.status} onChange={fset("status")}>
           <option value="">全部狀態</option>{EXP_STATUS.map((s) => <option key={s}>{s}</option>)}
         </select>
@@ -2252,7 +2250,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
   /* 篩選列跟每日支出頁面統一：月份／單日切換＋搜尋（類別／項目／金額）＋經手人＋狀態；
      月份改用全域共用狀態（見 App），跳頁面仍停留在同一個月份，其他篩選條件留在本頁
      自己的 flt，不記住、重新整理後清空，避免被舊篩選卡住（跟支出頁面同一套邏輯） */
-  const [flt, setFlt] = useState({ date: "", q: "", payer: "", status: "" });
+  const [flt, setFlt] = useState({ date: "", q: "", status: "" });
   const fset = (k) => (e) => setFlt({ ...flt, [k]: e.target.value });
   const cats = data.incomeCategories.filter((c) => c.active);
   const catOf = (id) => data.incomeCategories.find((c) => c.id === id)?.name || "—";
@@ -2263,7 +2261,6 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
     if (!viewStoreIds.includes(r.storeId)) return false;
     if (!perm.canSeeRecord(user, r)) return false;
     if (flt.q && ![catOf(r.categoryId), r.item || "", String(num(r.amount))].some((s) => s.includes(flt.q))) return false;
-    if (flt.payer && !(r.payer || "").includes(flt.payer)) return false;
     if (flt.status && r.status !== flt.status) return false;
     return true;
   }).sort((a, b) => cmpDate(a.date, b.date));
@@ -2378,7 +2375,6 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
           onPickDate={(d) => { setMonth(monthOf(d)); setFlt({ ...flt, date: d }); }}
           onClearDate={() => setFlt({ ...flt, date: "" })} />
         <input className="pl-input" style={{ width: 180 }} placeholder="搜尋類別／項目／金額" value={flt.q} onChange={fset("q")} />
-        <input className="pl-input" style={{ width: 100 }} placeholder="經手人" value={flt.payer} onChange={fset("payer")} />
         <select className="pl-input" style={{ width: 110 }} value={flt.status} onChange={fset("status")}>
           <option value="">全部狀態</option>{EXP_STATUS.map((s) => <option key={s}>{s}</option>)}
         </select>
