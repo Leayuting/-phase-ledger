@@ -2060,6 +2060,17 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval, month
     update((d) => ({ ...d, expenses: d.expenses.filter((r) => !ids.has(r.id)) }));
     setSelected(new Set());
   };
+  /* 批次過審：主要給 Excel 匯入等一次產生大量「草稿」紀錄時使用，不用逐筆打開編輯再送審，
+     只開放會計／系統管理者，跟單筆「通過」一樣寫審核紀錄，保留稽核軌跡 */
+  const batchApprove = () => {
+    const targets = selRows.filter((r) => r.status !== "過審");
+    if (targets.length === 0) return alert("選取的項目已經全部過審。");
+    if (!confirm(`確定將選取的 ${targets.length} 筆支出標記為「過審」？`)) return;
+    targets.forEach((r) => logApproval("每日支出", r.id, "過審", `${r.date}｜${r.item}`));
+    const ids = new Set(targets.map((r) => r.id));
+    update((d) => ({ ...d, expenses: d.expenses.map((r) => ids.has(r.id) ? { ...r, status: "過審", reviewedBy: user.id, reviewedAt: nowStamp() } : r) }));
+    setSelected(new Set());
+  };
 
   const fset = (k) => (e) => setFlt({ ...flt, [k]: e.target.value });
 
@@ -2129,6 +2140,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval, month
       {selRows.length > 0 && (
         <div className="pl-card no-print" style={{ padding: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 13 }}>已選 {selRows.length} 筆</span>
+          {perm.isAcct(user) && <button className="pl-btn small" style={{ color: T.green }} onClick={batchApprove}>批次通過</button>}
           <button className="pl-btn small danger" onClick={batchRemove}>批次刪除</button>
           <button className="pl-btn small" onClick={() => setSelected(new Set())}>取消選取</button>
         </div>
@@ -2343,6 +2355,17 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
     update((d) => ({ ...d, incomes: d.incomes.filter((r) => !ids.has(r.id)) }));
     setSelected(new Set());
   };
+  /* 批次過審：主要給 Excel 匯入等一次產生大量「草稿」紀錄時使用，不用逐筆打開編輯再送審，
+     只開放會計／系統管理者，跟單筆「通過」一樣寫審核紀錄，保留稽核軌跡 */
+  const batchApprove = () => {
+    const targets = selRows.filter((r) => r.status !== "過審");
+    if (targets.length === 0) return alert("選取的項目已經全部過審。");
+    if (!confirm(`確定將選取的 ${targets.length} 筆收入標記為「過審」？`)) return;
+    targets.forEach((r) => logApproval("門店收入", r.id, "過審", `${r.date}｜${r.item}`));
+    const ids = new Set(targets.map((r) => r.id));
+    update((d) => ({ ...d, incomes: d.incomes.map((r) => ids.has(r.id) ? { ...r, status: "過審", reviewedBy: user.id, reviewedAt: nowStamp() } : r) }));
+    setSelected(new Set());
+  };
 
   /* 本月固定收入帶入：每個門店區塊各自獨立判斷待帶入清單。金額每月可能不同，帶入前先讓
      使用者逐筆確認／修改金額，金額欄也可清空或改 0，代表先帶入項目、實際金額之後再自行
@@ -2390,6 +2413,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
       {selRows.length > 0 && (
         <div className="pl-card no-print" style={{ padding: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 13 }}>已選 {selRows.length} 筆</span>
+          {perm.isAcct(user) && <button className="pl-btn small" style={{ color: T.green }} onClick={batchApprove}>批次通過</button>}
           <button className="pl-btn small danger" onClick={batchRemove}>批次刪除</button>
           <button className="pl-btn small" onClick={() => setSelected(new Set())}>取消選取</button>
         </div>
