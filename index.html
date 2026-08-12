@@ -1365,8 +1365,7 @@ const SALES_EMPTY = {
   note: "", diffReason: "",
 };
 
-function SalesModule({ data, update, user, users, logAudit, logApproval }) {
-  const [month, setMonth] = usePersisted("pl_sales_month", monthOf(todayStr()));
+function SalesModule({ data, update, user, users, logAudit, logApproval, month, setMonth }) {
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(new Set());
   const scope = perm.storeScope(user);
@@ -1954,21 +1953,16 @@ function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit, defa
   );
 }
 
-function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
+function ExpenseModule({ data, update, user, users, logAudit, logApproval, month, setMonth }) {
   const [editing, setEditing] = useState(null);
   const [batchOpenFor, setBatchOpenFor] = useState(null); // storeId：哪個門店區塊的「新增支出」批次視窗開著
   const [fixedModalOpenFor, setFixedModalOpenFor] = useState(null); // storeId：哪個門店區塊的「帶入固定支出」視窗開著
   const [kind, setKind] = useState("expense");
   const [selected, setSelected] = useState(new Set());
-  const [flt, setFlt] = useState(() => {
-    let month = monthOf(todayStr());
-    try { const v = localStorage.getItem("pl_expenses_month"); if (v) month = JSON.parse(v); } catch (e) { /* 忽略 */ }
-    return { month, date: "", storeId: "", q: "", payer: "", status: "" };
-  });
-  /* 只記住月份篩選，不記住其他篩選條件（類別/廠商/付款人等），避免重新整理後被舊篩選卡住 */
-  useEffect(() => {
-    try { localStorage.setItem("pl_expenses_month", JSON.stringify(flt.month)); } catch (e) { /* 忽略 */ }
-  }, [flt.month]);
+  /* 月份改用全域共用狀態（見 App），跳頁面（營運總覽／每日收支／廠商叫貨／每日營收／月報）
+     仍停留在同一個月份；只有單日檢視、搜尋、付款人、狀態這些篩選條件留在本頁自己的 flt，
+     不記住、重新整理後清空，避免被舊篩選卡住 */
+  const [flt, setFlt] = useState({ date: "", storeId: "", q: "", payer: "", status: "" });
   const scope = perm.storeScope(user);
   const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
   /* 門店分頁只列「會計主體」層級：烘豆場不再單獨列成一個可選門店分頁，
@@ -1986,7 +1980,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
 
   const viewStoreIds = blockStores.map((s) => s.id);
   const rows = data.expenses.filter((r) => {
-    if (flt.date ? r.date !== flt.date : monthOf(r.date) !== flt.month) return false;
+    if (flt.date ? r.date !== flt.date : monthOf(r.date) !== month) return false;
     if (!perm.canSeeRecord(user, r)) return false;
     if (!viewStoreIds.includes(r.storeId)) return false;
     if (flt.q && ![catOf(r.categoryId), venOf(r.vendorId), r.item || "", String(num(r.amount))].some((s) => s.includes(flt.q))) return false;
@@ -2074,12 +2068,12 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
      金額欄也可清空或改 0，代表先帶入項目、實際金額之後再自行填寫（見 FixedBringInModal） */
   const fixedTodoFor = (storeId) => {
     const forStore = (data.fixedItems || []).filter((f) => f.active && f.storeId === storeId);
-    const done = forStore.filter((f) => data.expenses.some((e) => e.fixedItemId === f.id && monthOf(e.date) === flt.month));
+    const done = forStore.filter((f) => data.expenses.some((e) => e.fixedItemId === f.id && monthOf(e.date) === month));
     return { forStore, todo: forStore.filter((f) => !done.includes(f)) };
   };
 
   const commitFixed = (picked, storeId) => {
-    const date = flt.month + "/01";
+    const date = month + "/01";
     const dayClosed = isDayClosed(data, date, storeId);
     const recs = picked.map((f) => ({
       /* 固定支出項目本來就是預先核准的常態支出，帶入時跳過草稿／待審核，直接入帳 */
@@ -2114,13 +2108,13 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
         ))}
       </div>
 
-      {kind === "income" && <IncomeSection data={data} update={update} user={user} blockStores={blockStores} nameOf={nameOf} logAudit={logAudit} logApproval={logApproval} />}
+      {kind === "income" && <IncomeSection data={data} update={update} user={user} blockStores={blockStores} nameOf={nameOf} logAudit={logAudit} logApproval={logApproval} month={month} setMonth={setMonth} />}
 
       {kind === "expense" && <>
       <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-        <MonthPicker value={flt.month} exactDate={flt.date} onChange={(m) => setFlt({ ...flt, month: m, date: "" })}
-          onToday={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })}
-          onPickDate={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })}
+        <MonthPicker value={month} exactDate={flt.date} onChange={(m) => { setMonth(m); setFlt({ ...flt, date: "" }); }}
+          onToday={(d) => { setMonth(monthOf(d)); setFlt({ ...flt, date: d }); }}
+          onPickDate={(d) => { setMonth(monthOf(d)); setFlt({ ...flt, date: d }); }}
           onClearDate={() => setFlt({ ...flt, date: "" })} />
         <input className="pl-input" style={{ width: 180 }} placeholder="搜尋類別／廠商／品項／金額" value={flt.q} onChange={fset("q")} />
         <input className="pl-input" style={{ width: 100 }} placeholder="付款人" value={flt.payer} onChange={fset("payer")} />
@@ -2199,7 +2193,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval }) {
       {fixedModalOpenFor && (() => {
         const { todo } = fixedTodoFor(fixedModalOpenFor);
         return (
-          <FixedBringInModal items={todo} month={flt.month} storeName={nameOf(fixedModalOpenFor)} catOf={catOf}
+          <FixedBringInModal items={todo} month={month} storeName={nameOf(fixedModalOpenFor)} catOf={catOf}
             onClose={() => setFixedModalOpenFor(null)} onCommit={(picked) => commitFixed(picked, fixedModalOpenFor)} />
         );
       })()}
@@ -2259,28 +2253,22 @@ const INC_EMPTY = {
   payMethod: "現金", payer: "", invoiceNo: "", attachment: null, docType: "", noDocReason: "", note: "",
 };
 
-function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logApproval }) {
+function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logApproval, month, setMonth }) {
   const [editing, setEditing] = useState(null);
   const [batchOpenFor, setBatchOpenFor] = useState(null); // storeId：哪個門店區塊的「新增收入」批次視窗開著
   const [selected, setSelected] = useState(new Set());
   const [fixedModalOpenFor, setFixedModalOpenFor] = useState(null); // storeId：哪個門店區塊的「帶入固定收入」視窗開著
-  /* 篩選列跟每日支出頁面統一：月份／單日切換＋搜尋（類別／項目／金額）＋經手人＋狀態，
-     只記住月份篩選，其他篩選條件重新整理後清空，避免被舊篩選卡住（跟支出頁面同一套邏輯） */
-  const [flt, setFlt] = useState(() => {
-    let month = monthOf(todayStr());
-    try { const v = localStorage.getItem("pl_income_month"); if (v) month = JSON.parse(v); } catch (e) { /* 忽略 */ }
-    return { month, date: "", q: "", payer: "", status: "" };
-  });
-  useEffect(() => {
-    try { localStorage.setItem("pl_income_month", JSON.stringify(flt.month)); } catch (e) { /* 忽略 */ }
-  }, [flt.month]);
+  /* 篩選列跟每日支出頁面統一：月份／單日切換＋搜尋（類別／項目／金額）＋經手人＋狀態；
+     月份改用全域共用狀態（見 App），跳頁面仍停留在同一個月份，其他篩選條件留在本頁
+     自己的 flt，不記住、重新整理後清空，避免被舊篩選卡住（跟支出頁面同一套邏輯） */
+  const [flt, setFlt] = useState({ date: "", q: "", payer: "", status: "" });
   const fset = (k) => (e) => setFlt({ ...flt, [k]: e.target.value });
   const cats = data.incomeCategories.filter((c) => c.active);
   const catOf = (id) => data.incomeCategories.find((c) => c.id === id)?.name || "—";
   const viewStoreIds = blockStores.map((s) => s.id);
 
   const rows = (data.incomes || []).filter((r) => {
-    if (flt.date ? r.date !== flt.date : monthOf(r.date) !== flt.month) return false;
+    if (flt.date ? r.date !== flt.date : monthOf(r.date) !== month) return false;
     if (!viewStoreIds.includes(r.storeId)) return false;
     if (!perm.canSeeRecord(user, r)) return false;
     if (flt.q && ![catOf(r.categoryId), r.item || "", String(num(r.amount))].some((s) => s.includes(flt.q))) return false;
@@ -2361,12 +2349,12 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
      填寫（見 FixedBringInModal） */
   const fixedTodoFor = (storeId) => {
     const forStore = (data.fixedIncomeItems || []).filter((f) => f.active && f.storeId === storeId);
-    const done = forStore.filter((f) => (data.incomes || []).some((r) => r.fixedItemId === f.id && monthOf(r.date) === flt.month));
+    const done = forStore.filter((f) => (data.incomes || []).some((r) => r.fixedItemId === f.id && monthOf(r.date) === month));
     return { forStore, todo: forStore.filter((f) => !done.includes(f)) };
   };
 
   const commitFixed = (picked, storeId) => {
-    const date = flt.month + "/01";
+    const date = month + "/01";
     const dayClosed = isDayClosed(data, date, storeId);
     const recs = picked.map((f) => ({
       /* 固定收入項目本來就是預先核准的常態收入，帶入時跳過草稿／待審核，直接入帳 */
@@ -2385,9 +2373,9 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
   return (
     <div>
       <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-        <MonthPicker value={flt.month} exactDate={flt.date} onChange={(m) => setFlt({ ...flt, month: m, date: "" })}
-          onToday={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })}
-          onPickDate={(d) => setFlt({ ...flt, date: d, month: monthOf(d) })}
+        <MonthPicker value={month} exactDate={flt.date} onChange={(m) => { setMonth(m); setFlt({ ...flt, date: "" }); }}
+          onToday={(d) => { setMonth(monthOf(d)); setFlt({ ...flt, date: d }); }}
+          onPickDate={(d) => { setMonth(monthOf(d)); setFlt({ ...flt, date: d }); }}
           onClearDate={() => setFlt({ ...flt, date: "" })} />
         <input className="pl-input" style={{ width: 180 }} placeholder="搜尋類別／項目／金額" value={flt.q} onChange={fset("q")} />
         <input className="pl-input" style={{ width: 100 }} placeholder="經手人" value={flt.payer} onChange={fset("payer")} />
@@ -2498,7 +2486,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
       {fixedModalOpenFor && (() => {
         const { todo } = fixedTodoFor(fixedModalOpenFor);
         return (
-          <FixedBringInModal items={todo} month={flt.month} storeName={nameOf(fixedModalOpenFor)} catOf={catOf}
+          <FixedBringInModal items={todo} month={month} storeName={nameOf(fixedModalOpenFor)} catOf={catOf}
             onClose={() => setFixedModalOpenFor(null)} onCommit={(picked) => commitFixed(picked, fixedModalOpenFor)} />
         );
       })()}
@@ -2678,8 +2666,7 @@ const ORD_EMPTY = {
   invoiceNo: "", attachment: null, docType: "", noDocReason: "", note: "",
 };
 
-function OrderModule({ data, update, user, users, logAudit }) {
-  const [month, setMonth] = usePersisted("pl_orders_month", monthOf(todayStr()));
+function OrderModule({ data, update, user, users, logAudit, month, setMonth }) {
   const [dateFlt, setDateFlt] = usePersisted("pl_orders_dateFlt", "");
   const [editing, setEditing] = useState(null);
   const [vFlt, setVFlt] = useState("");
@@ -3485,9 +3472,8 @@ function computeMonthReport(data, month, storeFilter) {
   };
 }
 
-function ReportModule({ data, update, user, users }) {
+function ReportModule({ data, update, user, users, month, setMonth }) {
   const [reportTab, setReportTab] = usePersisted("pl_report_tab", "monthly");
-  const [month, setMonth] = usePersisted("pl_report_month", monthOf(todayStr()));
   const [storeFilter, setStoreFilter] = usePersisted("pl_report_storeFilter", null);
   const cur = computeMonthReport(data, month, storeFilter);
   const prev = computeMonthReport(data, prevMonth(month), storeFilter);
@@ -6940,7 +6926,10 @@ function App() {
     const h = window.location.hash.replace("#", "");
     return NAV.some(([k]) => k === h) ? h : "dashboard";
   });
-  const [month, setMonth] = usePersisted("pl_dash_month", monthOf(todayStr()));
+  /* 全域月份：營運總覽／每日收支／廠商叫貨／每日營收／月度報表共用同一個月份選擇，
+     使用者在任一頁選定月份後，切換頁面仍停留在同一個月份，不用每個頁面各自重選一次。
+     月結對帳（習慣看上個月）、匯出、重複資料檢查等一次性／不同語意的頁面則維持各自獨立 */
+  const [month, setMonth] = usePersisted("pl_global_month", monthOf(todayStr()));
   const [storeFilter, setStoreFilter] = usePersisted("pl_dash_storeFilter", null);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
   const saveTimer = useRef(null);
@@ -7237,11 +7226,11 @@ function App() {
     switch (page) {
       case "dashboard": return <Dashboard data={data} update={update} user={user} month={month} setMonth={setMonth} storeFilter={storeFilter} setStoreFilter={setStoreFilter} users={profiles} goto={goto} />;
       case "daily": return <DailyKeyModule {...modProps} goto={goto} />;
-      case "sales": return <SalesModule {...modProps} />;
-      case "expenses": return <ExpenseModule {...modProps} />;
-      case "orders": return <OrderModule {...modProps} />;
+      case "sales": return <SalesModule {...modProps} month={month} setMonth={setMonth} />;
+      case "expenses": return <ExpenseModule {...modProps} month={month} setMonth={setMonth} />;
+      case "orders": return <OrderModule {...modProps} month={month} setMonth={setMonth} />;
       case "ar": return perm.canAR(user) ? <ARModule {...modProps} /> : <Empty text="應收帳款僅開放會計與系統管理者。" />;
-      case "report": return <ReportModule data={data} update={update} user={user} users={profiles} />;
+      case "report": return <ReportModule data={data} update={update} user={user} users={profiles} month={month} setMonth={setMonth} />;
       case "import": return <ImportModule data={data} update={update} user={user} />;
       case "master": return <MasterModule data={data} update={update} user={user} profiles={profiles} />;
       case "logs": return <LogsModule data={data} users={profiles} />;
@@ -7392,6 +7381,7 @@ function SettingsModule({ data, update, user, setData, users }) {
     </div>
   );
 }
+
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
