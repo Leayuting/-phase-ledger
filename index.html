@@ -1618,7 +1618,7 @@ const EXP_EMPTY = {
    批次明細輸入：一次進入、連續多筆、一次儲存
 ──────────────────────────────────────────────*/
 function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, defaultDate }) {
-  const blank = () => ({ key: uid("row"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金", payer: user.name, invoiceNo: "", docType: "", noDocReason: "", note: "" });
+  const blank = () => ({ key: uid("row"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金", payer: user.name, note: "" });
   /* 若使用者正在查看單日檢視的某一天，新增時直接帶入那一天，而不是固定帶今天 */
   const [date, setDate] = useState(defaultDate || todayStr());
   const [rows, setRows] = useState([blank(), blank(), blank()]);
@@ -1626,7 +1626,6 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, de
   const vens = data.vendors.filter((v) => v.active !== false);
 
   const setRow = (key, k, v) => setRows(rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
-  const patchRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const addRow = () => setRows([...rows, blank()]);
   const delRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
   const filled = rows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
@@ -1642,8 +1641,6 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, de
       if (r.categoryName.trim() === "廠商原料叫貨") { alert(`第 ${n} 列：「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。`); return null; }
       if (!r.item.trim()) { alert(`第 ${n} 列：請填寫支出品項`); return null; }
       if (num(r.amount) <= 0) { alert(`第 ${n} 列：金額需大於 0`); return null; }
-      const docErr = validateDoc(r);
-      if (docErr) { alert(`第 ${n} 列：${docErr}`); return null; }
     }
     return filled;
   };
@@ -1664,8 +1661,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, de
     const recs = valid.map((r) => ({
       ...EXP_EMPTY, id: uid("ex"), date, storeId: curStore,
       categoryId: resolveCat(r.categoryName), item: r.item.trim(), vendorId: r.vendorId, amount: num(r.amount),
-      payMethod: r.payMethod, payer: r.payer || user.name, invoiceNo: r.invoiceNo.trim(),
-      docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "", note: r.note.trim(),
+      payMethod: r.payMethod, payer: r.payer || user.name, note: r.note.trim(),
       /* 現金付款免審核直接入帳，其餘一律待審核，不再讓使用者自己選草稿／送審 */
       status: autoStatus(r.payMethod), createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       postClose: dayClosed,
@@ -1690,7 +1686,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, de
         <table className="pl-table">
           <thead><tr>
             <th style={{ width: 30 }}>#</th><th>類別 *</th><th>品項 *</th><th>廠商</th>
-            <th className="num">金額 *</th><th>付款方式</th><th>付款人</th><th>發票號碼</th><th>單據／憑證 *</th><th>備註</th><th></th>
+            <th className="num">金額 *</th><th>付款方式</th><th>付款人</th><th>備註</th><th></th>
           </tr></thead>
           <tbody>
             {rows.map((r, i) => (
@@ -1713,8 +1709,6 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, de
                   </select>
                 </td>
                 <td style={{ minWidth: 80 }}><input className="pl-input" value={r.payer} onChange={(e) => setRow(r.key, "payer", e.target.value)} /></td>
-                <td style={{ minWidth: 100 }}><input className="pl-input" value={r.invoiceNo} onChange={(e) => setRow(r.key, "invoiceNo", e.target.value)} /></td>
-                <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchRow(r.key, patch)} />
                 <td style={{ minWidth: 100 }}><input className="pl-input" value={r.note} onChange={(e) => setRow(r.key, "note", e.target.value)} /></td>
                 <td><button className="pl-btn small danger" onClick={() => delRow(r.key)}>✕</button></td>
               </tr>
@@ -1740,14 +1734,13 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, de
 /* 批次新增收入：跟批次新增支出同一套操作邏輯（一次進入、連續多筆、一次儲存），
    統一收入／支出頁面的新增方式；差別只在收入沒有廠商欄位、類別對照的是 incomeCategories */
 function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, defaultDate }) {
-  const blank = () => ({ key: uid("row"), categoryName: "", item: "", amount: "", payMethod: "現金", payer: user.name, invoiceNo: "", docType: "", noDocReason: "", note: "" });
+  const blank = () => ({ key: uid("row"), categoryName: "", item: "", amount: "", payMethod: "現金", payer: user.name, note: "" });
   /* 若使用者正在查看單日檢視的某一天，新增時直接帶入那一天，而不是固定帶今天 */
   const [date, setDate] = useState(defaultDate || todayStr());
   const [rows, setRows] = useState([blank(), blank(), blank()]);
   const cats = (data.incomeCategories || []).filter((c) => c.active);
 
   const setRow = (key, k, v) => setRows(rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
-  const patchRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const addRow = () => setRows([...rows, blank()]);
   const delRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
   const filled = rows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
@@ -1762,8 +1755,6 @@ function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, def
       if (!r.categoryName.trim()) { alert(`第 ${n} 列：請選擇或輸入收入類別`); return null; }
       if (!r.item.trim()) { alert(`第 ${n} 列：請填寫收入項目`); return null; }
       if (num(r.amount) <= 0) { alert(`第 ${n} 列：金額需大於 0`); return null; }
-      const docErr = validateDoc(r);
-      if (docErr) { alert(`第 ${n} 列：${docErr}`); return null; }
     }
     return filled;
   };
@@ -1784,8 +1775,7 @@ function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, def
     const recs = valid.map((r) => ({
       ...INC_EMPTY, id: uid("in"), date, storeId: curStore,
       categoryId: resolveCat(r.categoryName), item: r.item.trim(), amount: num(r.amount),
-      payMethod: r.payMethod, payer: r.payer || user.name, invoiceNo: r.invoiceNo.trim(),
-      docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "", note: r.note.trim(),
+      payMethod: r.payMethod, payer: r.payer || user.name, note: r.note.trim(),
       /* 現金收款免審核直接入帳，其餘一律待審核，不再讓使用者自己選草稿／送審 */
       status: autoStatus(r.payMethod), createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       postClose: dayClosed,
@@ -1810,7 +1800,7 @@ function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, def
         <table className="pl-table">
           <thead><tr>
             <th style={{ width: 30 }}>#</th><th>類別 *</th><th>項目 *</th>
-            <th className="num">金額 *</th><th>收款方式</th><th>經手人</th><th>發票號碼</th><th>單據／憑證 *</th><th>備註</th><th></th>
+            <th className="num">金額 *</th><th>收款方式</th><th>經手人</th><th>備註</th><th></th>
           </tr></thead>
           <tbody>
             {rows.map((r, i) => (
@@ -1828,8 +1818,6 @@ function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, def
                   </select>
                 </td>
                 <td style={{ minWidth: 80 }}><input className="pl-input" value={r.payer} onChange={(e) => setRow(r.key, "payer", e.target.value)} /></td>
-                <td style={{ minWidth: 100 }}><input className="pl-input" value={r.invoiceNo} onChange={(e) => setRow(r.key, "invoiceNo", e.target.value)} /></td>
-                <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchRow(r.key, patch)} />
                 <td style={{ minWidth: 100 }}><input className="pl-input" value={r.note} onChange={(e) => setRow(r.key, "note", e.target.value)} /></td>
                 <td><button className="pl-btn small danger" onClick={() => delRow(r.key)}>✕</button></td>
               </tr>
@@ -2014,8 +2002,6 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval, month
     if (form.categoryId === ORDER_CAT_ID) return alert("「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。");
     if (!form.item.trim()) return alert("請填寫支出品項");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
-    const docErr = validateDoc(form);
-    if (docErr) return alert(docErr);
     const old = form.id ? data.expenses.find((r) => r.id === form.id) : null;
     /* 過審的紀錄由管理者修改時維持過審；其餘一律依付款方式自動判斷（現金免審核直接入帳，否則待審核） */
     const status = old && old.status === "過審" ? old.status : autoStatus(form.payMethod);
@@ -2221,25 +2207,18 @@ function ExpenseRowsTable({ rows, selected, toggleSel, toggleSelAllIn, nameOf, c
       <table className="pl-table">
         <thead><tr>
           <th style={{ width: 30 }}><input type="checkbox" checked={allSelected} onChange={() => toggleSelAllIn(rows)} /></th>
-          <th>日期</th><th>門店／部門</th><th>類別</th><th>品項</th><th>廠商</th>
-          <th className="num">金額</th><th>付款方式</th><th>付款人</th><th>代墊</th><th>發票</th><th>附件</th><th>狀態</th><th></th>
+          <th>日期</th><th>類別</th><th>品項</th>
+          <th className="num">金額</th><th>狀態</th><th></th>
         </tr></thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={14}><Empty text={emptyText} /></td></tr>}
+          {rows.length === 0 && <tr><td colSpan={7}><Empty text={emptyText} /></td></tr>}
           {rows.map((r) => (
             <tr key={r.id}>
               <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
               <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
-              <td>{nameOf(r.storeId)}</td>
               <td>{catOf(r.categoryId)}</td>
               <td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
-              <td>{venOf(r.vendorId) || "—"}</td>
               <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
-              <td>{r.payMethod}</td>
-              <td>{r.payer}</td>
-              <td>{r.isAdvance ? <Badge text={r.isReimbursed ? "已核銷" : "未核銷"} tone={r.isReimbursed ? "green" : "yellow"} /> : "—"}</td>
-              <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
-              <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
               <td><Badge text={r.status} /></td>
               <td style={{ whiteSpace: "nowrap" }}>
                 {perm.canEdit(user, r) &&
@@ -2303,8 +2282,6 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
     if (!form.categoryId) return alert("請選擇收入類別");
     if (!form.item.trim()) return alert("請填寫收入項目");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
-    const docErr = validateDoc(form);
-    if (docErr) return alert(docErr);
     const old = form.id ? data.incomes.find((r) => r.id === form.id) : null;
     /* 過審的紀錄由管理者修改時維持過審；其餘一律依收款方式自動判斷（現金免審核直接入帳，否則待審核） */
     const status = old && old.status === "過審" ? old.status : autoStatus(form.payMethod);
@@ -2486,9 +2463,6 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
               </select>
             </Field>
             <Field label="經手人"><input className="pl-input" value={editing.payer} onChange={(e) => setEditing({ ...editing, payer: e.target.value })} /></Field>
-            <Field label="發票號碼"><input className="pl-input" value={editing.invoiceNo} onChange={(e) => setEditing({ ...editing, invoiceNo: e.target.value })} /></Field>
-            <DocumentField docType={editing.docType} noDocReason={editing.noDocReason} attachment={editing.attachment}
-              onChange={(patch) => setEditing({ ...editing, ...patch })} />
             <Field label="備註" span={3}><input className="pl-input" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></Field>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
@@ -2527,10 +2501,10 @@ function IncomeRowsTable({ rows, selected, toggleSel, toggleSelAllIn, catOf, use
         <thead><tr>
           <th style={{ width: 30 }}><input type="checkbox" checked={allSelected} onChange={() => toggleSelAllIn(rows)} /></th>
           <th>日期</th><th>類別</th><th>項目</th>
-          <th className="num">金額</th><th>收款方式</th><th>經手人</th><th>發票</th><th>附件</th><th>狀態</th><th></th>
+          <th className="num">金額</th><th>狀態</th><th></th>
         </tr></thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={11}><Empty text={emptyText} /></td></tr>}
+          {rows.length === 0 && <tr><td colSpan={7}><Empty text={emptyText} /></td></tr>}
           {rows.map((r) => (
             <tr key={r.id}>
               <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
@@ -2538,10 +2512,6 @@ function IncomeRowsTable({ rows, selected, toggleSel, toggleSelAllIn, catOf, use
               <td>{catOf(r.categoryId)}</td>
               <td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
               <td className="num" style={{ fontWeight: 600, color: T.green }}>{fmtN(r.amount)}</td>
-              <td>{r.payMethod}</td>
-              <td>{r.payer}</td>
-              <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
-              <td><DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} /></td>
               <td><Badge text={r.status} /></td>
               <td style={{ whiteSpace: "nowrap" }}>
                 {perm.canEdit(user, r) &&
@@ -2648,7 +2618,6 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
           </select>
         </Field>
         <Field label="付款人"><input className="pl-input" value={form.payer} onChange={set("payer")} disabled={locked} /></Field>
-        <Field label="發票號碼"><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} placeholder="AB-12345678" disabled={locked} /></Field>
         <Field label="員工代墊">
           <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0" }}>
             <input type="checkbox" checked={form.isAdvance} onChange={set("isAdvance")} disabled={locked} /> 是
@@ -2664,8 +2633,6 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
             {form.isReimbursed && <Field label="核銷日期"><DateInput value={form.reimburseDate} onChange={set("reimburseDate")} disabled={locked} /></Field>}
           </>
         )}
-        <DocumentField docType={form.docType} noDocReason={form.noDocReason} attachment={form.attachment}
-          onChange={(patch) => setForm({ ...form, ...patch })} disabled={locked} />
         <Field label="備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} disabled={locked} /></Field>
       </div>
       {!locked && (
