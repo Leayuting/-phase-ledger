@@ -80,12 +80,18 @@ const CATEGORY_SEED = [
   ["租金-119號", true], ["租金-121號", true], ["租金-烘豆場", true], ["營業稅", true],
 ].map(([name, fixed], i) => ({ id: name === "廠商原料叫貨" ? ORDER_CAT_ID : "cat" + (i + 1), name, fixed, active: true }));
 
+/* 廠商分區：門市（一般門市進貨）／生豆（生豆採購），供「廠商」頁面的「本月各廠商叫貨」
+   面板分區顯示。新廠商預設依名稱猜測分類（名稱含「生豆」的猜生豆，其餘猜門市），
+   可在主檔管理／廠商主檔手動調整 */
+const VENDOR_CATEGORIES = ["門市", "生豆"];
+const guessVendorCategory = (name) => (String(name || "").includes("生豆") ? "生豆" : "門市");
+
 const VENDOR_SEED = [
-  { id: "v1", code: "V001", name: "豐禾生豆", contact: "林先生", phone: "04-2222-1111", billing: "月結", monthlyDay: 10, payMethod: "銀行轉帳", active: true, note: "生豆主要供應" },
-  { id: "v2", code: "V002", name: "日出乳品", contact: "陳小姐", phone: "04-2333-2222", billing: "月結", monthlyDay: 5, payMethod: "銀行轉帳", active: true, note: "鮮乳每週配送" },
-  { id: "v3", code: "V003", name: "山川包材", contact: "張先生", phone: "04-2444-3333", billing: "現結", monthlyDay: null, payMethod: "現金", active: true, note: "豆袋、濾掛盒" },
-  { id: "v4", code: "V004", name: "碧月甜點工作室", contact: "碧月", phone: "0912-345-678", billing: "月結", monthlyDay: 15, payMethod: "銀行轉帳", active: true, note: "勤美合作甜點" },
-  { id: "v5", code: "V005", name: "青田果物", contact: "王小姐", phone: "04-2555-4444", billing: "現結", monthlyDay: null, payMethod: "現金", active: true, note: "特調水果" },
+  { id: "v1", code: "V001", name: "豐禾生豆", contact: "林先生", phone: "04-2222-1111", billing: "月結", monthlyDay: 10, payMethod: "銀行轉帳", active: true, note: "生豆主要供應", category: "生豆" },
+  { id: "v2", code: "V002", name: "日出乳品", contact: "陳小姐", phone: "04-2333-2222", billing: "月結", monthlyDay: 5, payMethod: "銀行轉帳", active: true, note: "鮮乳每週配送", category: "門市" },
+  { id: "v3", code: "V003", name: "山川包材", contact: "張先生", phone: "04-2444-3333", billing: "現結", monthlyDay: null, payMethod: "現金", active: true, note: "豆袋、濾掛盒", category: "門市" },
+  { id: "v4", code: "V004", name: "碧月甜點工作室", contact: "碧月", phone: "0912-345-678", billing: "月結", monthlyDay: 15, payMethod: "銀行轉帳", active: true, note: "勤美合作甜點", category: "門市" },
+  { id: "v5", code: "V005", name: "青田果物", contact: "王小姐", phone: "04-2555-4444", billing: "現結", monthlyDay: null, payMethod: "現金", active: true, note: "特調水果", category: "門市" },
 ];
 
 /* 使用者主檔已改由 Supabase Auth + profiles 表提供（見 App 元件的 profiles state），
@@ -920,11 +926,6 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
   expM.forEach((e) => { const n = catById[e.categoryId]?.name || "其他"; catPieMap[n] = (catPieMap[n] || 0) + num(e.amount); });
   ordM.forEach((o) => { catPieMap["廠商叫貨"] = (catPieMap["廠商叫貨"] || 0) + num(o.amount); });
   const catPie = Object.entries(catPieMap).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 8);
-  const vendorRank = (() => {
-    const m = {};
-    ordM.forEach((o) => { const v = data.vendors.find((x) => x.id === o.vendorId); const n = v ? v.name : "—"; m[n] = (m[n] || 0) + num(o.amount); });
-    return Object.entries(m).map(([name, 金額]) => ({ name, 金額 })).sort((a, b) => b.金額 - a.金額).slice(0, 6);
-  })();
   const sixMonths = Array.from({ length: 6 }, (_, i) => monthShift(month, i - 5)).map((m) => {
     const sm = data.dailySales.filter((r) => monthOf(r.date) === m && (!storeFilter || r.storeId === storeFilter));
     const inc = sm.reduce((a, s) => a + calcSales(s).total, 0);
@@ -1124,32 +1125,6 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
               </PieChart>
             </ResponsiveContainer>
           )}
-        </ChartCard>
-        <ChartCard title="各廠商叫貨金額排名">
-          {vendorRank.length === 0 ? <Empty /> : (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={vendorRank} layout="vertical" margin={{ top: 6, right: 20, left: 10, bottom: 0 }}>
-                <CartesianGrid stroke={T.line} strokeDasharray="3 3" />
-                <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v) => (v / 1000) + "k"} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={110} />
-                <Tooltip formatter={tooltipFmt} />
-                <Bar dataKey="金額" fill={T.yellow} radius={[0, 4, 4, 0]} maxBarSize={20} />
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </ChartCard>
-        <ChartCard title="每月收入與支出比較" wide>
-          <ResponsiveContainer width="100%" height={230}>
-            <BarChart data={sixMonths} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
-              <CartesianGrid stroke={T.line} strokeDasharray="3 3" />
-              <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => (v / 1000) + "k"} width={44} />
-              <Tooltip formatter={tooltipFmt} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar dataKey="收入" fill={T.green} radius={[4, 4, 0, 0]} maxBarSize={30} />
-              <Bar dataKey="支出" fill={T.red} radius={[4, 4, 0, 0]} maxBarSize={30} />
-            </BarChart>
-          </ResponsiveContainer>
         </ChartCard>
         <ChartCard title="最近六個月損益趨勢" wide>
           <ResponsiveContainer width="100%" height={230}>
@@ -2691,6 +2666,16 @@ function OrderModule({ data, update, user, users, logAudit, month, setMonth }) {
   const soleVendorId = Object.keys(byVendor).length === 1 ? Object.keys(byVendor)[0] : null;
   const isVendorOpen = (vid) => openVendor === vid || (openVendor === null && soleVendorId === vid);
   const toggleVendor = (vid) => setOpenVendor(isVendorOpen(vid) ? "__none__" : vid);
+  /* 「本月各廠商叫貨」依廠商分區（門市／生豆）分開顯示，各自小計 */
+  const catOfVendor = (vid) => {
+    const v = data.vendors.find((x) => x.id === vid);
+    return (v && v.category) || guessVendorCategory(v && v.name);
+  };
+  const vendorEntries = Object.entries(byVendor).sort((a, b) => b[1] - a[1]);
+  const vendorSections = VENDOR_CATEGORIES.map((cat) => {
+    const entries = vendorEntries.filter(([vid]) => catOfVendor(vid) === cat);
+    return { cat, entries, subtotal: entries.reduce((a, [, amt]) => a + amt, 0) };
+  });
   const monthlyUnpaid = visible.filter((o) => o.billing === "月結" && o.payStatus !== "已付款").reduce((a, o) => a + num(o.amount), 0);
   const overdue = visible.filter((o) => o.payStatus !== "已付款" && o.dueDate && cmpDate(o.dueDate, today) < 0);
   const overdueSum = overdue.reduce((a, o) => a + num(o.amount), 0);
@@ -2784,39 +2769,44 @@ function OrderModule({ data, update, user, users, logAudit, month, setMonth }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 14 }}>
-        <div className="pl-card" style={{ padding: 14 }}>
-          <div className="pl-serif" style={{ fontWeight: 600, marginBottom: 8 }}>
-            {dateFlt ? `${dateFlt} 各廠商叫貨` : "本月各廠商叫貨"}
-          </div>
-          {Object.keys(byVendor).length === 0 ? <Empty text={dateFlt ? "當天沒有叫貨紀錄" : "本月尚無叫貨紀錄"} /> : Object.entries(byVendor).sort((a, b) => b[1] - a[1]).map(([vid, amt]) => {
-            const opened = isVendorOpen(vid);
-            const detail = rows.filter((o) => o.vendorId === vid).sort((a, b) => cmpDate(a.date, b.date));
-            return (
-              <div key={vid} style={{ borderBottom: `1px dashed ${T.line}` }}>
-                <div onClick={() => toggleVendor(vid)}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13.5, cursor: "pointer" }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ color: T.sub, fontSize: 10 }}>{opened ? "▼" : "▶"}</span>
-                    {venOf(vid)}
-                    <span style={{ color: T.sub, fontSize: 12 }}>{detail.length} 筆</span>
-                  </span>
-                  <b>{fmt(amt)}</b>
-                </div>
-                {opened && (
-                  <div style={{ padding: "2px 0 8px 22px" }}>
-                    {detail.map((o) => (
-                      <div key={o.id} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: T.ink, gap: 8 }}>
-                        <span style={{ fontVariantNumeric: "tabular-nums", color: T.sub, whiteSpace: "nowrap" }}>{o.date}</span>
-                        <span style={{ flex: 1, color: T.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.items || "—"}</span>
-                        <span style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmt(num(o.amount))}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+        {vendorSections.map(({ cat, entries, subtotal }) => (
+          <div key={cat} className="pl-card" style={{ padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div className="pl-serif" style={{ fontWeight: 600 }}>
+                {cat}・{dateFlt ? `${dateFlt} 叫貨` : "本月叫貨"}
               </div>
-            );
-          })}
-        </div>
+              {entries.length > 0 && <b style={{ fontSize: 13.5 }}>{fmt(subtotal)}</b>}
+            </div>
+            {entries.length === 0 ? <Empty text={dateFlt ? "當天沒有叫貨紀錄" : "本月尚無叫貨紀錄"} /> : entries.map(([vid, amt]) => {
+              const opened = isVendorOpen(vid);
+              const detail = rows.filter((o) => o.vendorId === vid).sort((a, b) => cmpDate(a.date, b.date));
+              return (
+                <div key={vid} style={{ borderBottom: `1px dashed ${T.line}` }}>
+                  <div onClick={() => toggleVendor(vid)}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13.5, cursor: "pointer" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ color: T.sub, fontSize: 10 }}>{opened ? "▼" : "▶"}</span>
+                      {venOf(vid)}
+                      <span style={{ color: T.sub, fontSize: 12 }}>{detail.length} 筆</span>
+                    </span>
+                    <b>{fmt(amt)}</b>
+                  </div>
+                  {opened && (
+                    <div style={{ padding: "2px 0 8px 22px" }}>
+                      {detail.map((o) => (
+                        <div key={o.id} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: T.ink, gap: 8 }}>
+                          <span style={{ fontVariantNumeric: "tabular-nums", color: T.sub, whiteSpace: "nowrap" }}>{o.date}</span>
+                          <span style={{ flex: 1, color: T.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.items || "—"}</span>
+                          <span style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmt(num(o.amount))}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </div>
 
       {selRows.length > 0 && (
@@ -3866,13 +3856,13 @@ function VendorMaster({ data, update }) {
   return (
     <div className="pl-card pl-scroll-x">
       <div style={{ padding: 12, borderBottom: `1px solid ${T.line}`, display: "flex", gap: 8, alignItems: "center" }}>
-        <button className="pl-btn primary small" onClick={() => setEditing({ id: null, name: "", contact: "", phone: "", billing: "現結", monthlyDay: "", payMethod: "現金", active: true, note: "" })}>＋ 新增廠商</button>
+        <button className="pl-btn primary small" onClick={() => setEditing({ id: null, name: "", contact: "", phone: "", billing: "現結", monthlyDay: "", payMethod: "現金", active: true, note: "", category: "門市" })}>＋ 新增廠商</button>
         <button className={"pl-btn small" + (reorderMode ? " primary" : "")} onClick={() => setReorderMode((m) => !m)}>
           {reorderMode ? "✓ 完成排序" : "排序編輯"}
         </button>
       </div>
       <table className="pl-table">
-        <thead><tr>{reorderMode && <th></th>}<th>廠商名稱</th><th>聯絡人</th><th>電話</th><th>結帳方式</th><th>月結日</th><th>預設付款</th><th>狀態</th><th>備註</th><th></th></tr></thead>
+        <thead><tr>{reorderMode && <th></th>}<th>廠商名稱</th><th>分區</th><th>聯絡人</th><th>電話</th><th>結帳方式</th><th>月結日</th><th>預設付款</th><th>狀態</th><th>備註</th><th></th></tr></thead>
         <tbody>
           {data.vendors.map((v, idx) => (
             <tr key={v.id}
@@ -3884,7 +3874,9 @@ function VendorMaster({ data, update }) {
                   <DragHandle draggable onDragStart={() => { dragRef.current = { id: v.id, idx }; }} />
                 </td>
               )}
-              <td>{v.name}</td><td>{v.contact}</td><td>{v.phone}</td>
+              <td>{v.name}</td>
+              <td><Badge text={v.category || guessVendorCategory(v.name)} tone={(v.category || guessVendorCategory(v.name)) === "生豆" ? "brown" : "green"} /></td>
+              <td>{v.contact}</td><td>{v.phone}</td>
               <td>{v.billing}</td><td>{v.monthlyDay ? "每月 " + v.monthlyDay + " 日" : "—"}</td><td>{v.payMethod}</td>
               <td><Badge text={v.active ? "啟用中" : "停用"} tone={v.active ? "green" : "gray"} /></td>
               <td style={{ fontSize: 12.5, color: T.sub }}>{v.note}</td>
@@ -3900,6 +3892,11 @@ function VendorMaster({ data, update }) {
         <Modal title={editing.id ? "編輯廠商" : "新增廠商"} onClose={() => setEditing(null)} width={640}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
             <Field label="廠商名稱" required><input className="pl-input" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
+            <Field label="分區">
+              <select className="pl-input" value={editing.category || guessVendorCategory(editing.name)} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+                {VENDOR_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
             <Field label="聯絡人"><input className="pl-input" value={editing.contact} onChange={(e) => setEditing({ ...editing, contact: e.target.value })} /></Field>
             <Field label="電話"><input className="pl-input" value={editing.phone} onChange={(e) => setEditing({ ...editing, phone: e.target.value })} /></Field>
             <Field label="結帳方式">
@@ -4827,7 +4824,7 @@ function ImportModule({ data, update, user }) {
       const ensureVendor = (name) => {
         if (!name) return "";
         if (venByName[name]) return venByName[name];
-        const v = { id: uid("v"), code: "V" + String(vendors.length + 1).padStart(3, "0"), name, contact: "", phone: "", billing: "月結", monthlyDay: null, payMethod: "銀行轉帳", active: true, note: "Excel 匯入自動建立" };
+        const v = { id: uid("v"), code: "V" + String(vendors.length + 1).padStart(3, "0"), name, contact: "", phone: "", billing: "月結", monthlyDay: null, payMethod: "銀行轉帳", active: true, note: "Excel 匯入自動建立", category: guessVendorCategory(name) };
         vendors.push(v); venByName[name] = v.id;
         return v.id;
       };
@@ -7090,6 +7087,9 @@ function App() {
         if (stored.cashIncomeOverrides["2026/06"].st1 === undefined) stored.cashIncomeOverrides["2026/06"].st1 = 861823;
         /* 修正：先前誤把 861823 也設成「全部門店」的調整值，這裡移除，讓全部門店恢復自動加總計算 */
         if (stored.cashIncomeOverrides["2026/06"].all === 861823) delete stored.cashIncomeOverrides["2026/06"].all;
+        /* 廠商分區（門市／生豆）：既有廠商若還沒有 category，依名稱猜測補上，
+           之後可在主檔管理／廠商主檔手動調整 */
+        stored.vendors = (stored.vendors || []).map((v) => v.category ? v : { ...v, category: guessVendorCategory(v.name) });
         delete stored.users; delete stored.currentUserId; // 舊資料殘留欄位，使用者現改由 profiles 提供
         setData(stored);
         /* 上面這些都是登入當下對資料做的搬遷／補值（新類別、改名、去重……），一定要立刻存回
