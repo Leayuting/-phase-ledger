@@ -2979,11 +2979,10 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
   const openInvoiceForm = (g) => {
     setInvoiceEditing(g.payable
       ? { ...g.payable }
-      : { id: null, vendorId: g.vid, storeId: g.storeId, period: settleMonth, invoiceNo: "", invoiceAmount: "", invoiceDate: today, attachment: null, discrepancyReason: "" });
+      : { id: null, vendorId: g.vid, storeId: g.storeId, period: settleMonth, invoiceAmount: "", invoiceDate: today, attachment: null, discrepancyReason: "" });
   };
 
   const saveInvoice = (form, ordersTotal) => {
-    if (!form.invoiceNo.trim()) return alert("請填寫發票號碼");
     if (!validDate(form.invoiceDate)) return alert("請填寫正確發票日期（YYYY/MM/DD）");
     const invoiceAmount = num(form.invoiceAmount);
     if (invoiceAmount <= 0) return alert("發票金額需大於 0");
@@ -3058,7 +3057,7 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
               )}
             </div>
             {(!g.payable || g.payable.cancelled) && <Badge text="尚未登錄統一發票" tone="yellow" />}
-            {g.payable && !g.payable.cancelled && g.payable.status === "已核對" && <Badge text={`發票已核對・${g.payable.invoiceNo}`} tone="green" />}
+            {g.payable && !g.payable.cancelled && g.payable.status === "已核對" && <Badge text="發票已核對" tone="green" />}
             {g.payable && !g.payable.cancelled && g.payable.status === "金額不符" && <Badge text={`發票金額不符（差 ${fmt(g.payable.discrepancy)}）`} tone="red" />}
             {g.payable && g.payable.cancelled && <Badge text="發票調整已取消" tone="gray" />}
             {g.unpaid.length === 0
@@ -3085,7 +3084,7 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
 
           {g.payable && !g.payable.cancelled && (
             <div style={{ padding: "0 16px 12px", fontSize: 12.5, color: T.sub }}>
-              統一發票 {g.payable.invoiceNo}・{g.payable.invoiceDate}・發票金額 {fmt(g.payable.invoiceAmount)}
+              統一發票 {g.payable.invoiceDate}・發票金額 {fmt(g.payable.invoiceAmount)}
               ・原始叫貨累計 {fmt(g.payable.ordersTotal)}
               {g.payable.discrepancy !== 0 && <>・調整差額 <b style={{ color: g.payable.discrepancy > 0 ? T.red : T.green }}>{g.payable.discrepancy > 0 ? "+" : ""}{fmt(g.payable.discrepancy)}</b></>}
               {g.payable.status === "金額不符" && <span style={{ color: T.red }}>・差異原因：{g.payable.discrepancyReason}</span>}
@@ -3095,7 +3094,7 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
           )}
           {g.payable && g.payable.cancelled && (
             <div style={{ padding: "0 16px 12px", fontSize: 12.5, color: T.sub }}>
-              先前登錄的發票 {g.payable.invoiceNo}（金額 {fmt(g.payable.invoiceAmount)}）已取消調整，「廠商叫貨」統計恢復採原始叫貨累計 {fmt(g.payable.ordersTotal)}。
+              先前登錄的發票（金額 {fmt(g.payable.invoiceAmount)}）已取消調整，「廠商叫貨」統計恢復採原始叫貨累計 {fmt(g.payable.ordersTotal)}。
               <br />取消原因：{g.payable.cancelReason}・取消人員 {userName(g.payable.cancelledBy)}・取消時間 {g.payable.cancelledAt}
             </div>
           )}
@@ -3167,7 +3166,6 @@ function PayableInvoiceForm({ form, setForm, vendorName, storeName, ordersTotal,
     <Modal title={`登錄統一發票・${vendorName}・${storeName}・${monthLabel(form.period)}`} onClose={onClose} width={560}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
         <Field label="本月叫貨總額（系統彙整，唯讀）"><input className="pl-input" value={fmt(ordersTotal)} disabled /></Field>
-        <Field label="發票號碼" required><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} placeholder="AB-12345678" /></Field>
         <Field label="發票金額" required><input className="pl-input" inputMode="decimal" value={form.invoiceAmount} onChange={set("invoiceAmount")} /></Field>
         <Field label="發票日期" required><DateInput value={form.invoiceDate} onChange={set("invoiceDate")} /></Field>
         <Field label="發票附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
@@ -3223,7 +3221,6 @@ function OrderForm({ form, setForm, data, stores, onSave, onClose }) {
             {INVOICE_STATUS.map((s) => <option key={s}>{s}</option>)}
           </select>
         </Field>
-        <Field label="發票號碼"><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
         {form.billing === "月結" ? (
           <Field label="單據／憑證" span={2}>
             <span style={{ fontSize: 13, color: T.sub }}>月結叫貨的憑證於「月結對帳」登錄廠商統一發票，這裡不用個別上傳</span>
@@ -3333,12 +3330,12 @@ function ARModule({ data, update, user, logAudit }) {
         <table className="pl-table">
           <thead><tr>
             <th style={{ width: 30 }}><input type="checkbox" checked={rows.length > 0 && selRows.length === rows.length} onChange={toggleSelAll} /></th>
-            <th>編號</th><th>建立日期</th><th>客戶／公司</th><th>發票號碼</th>
+            <th>編號</th><th>建立日期</th><th>客戶／公司</th>
             <th className="num">請款金額</th><th className="num">已收金額</th><th className="num">未收金額</th>
             <th>到期日</th><th>收款狀態</th><th>對帳單</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={12}><Empty text="尚無應收帳款" /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={11}><Empty text="尚無應收帳款" /></td></tr>}
             {rows.map((r) => {
               const unpaid = num(r.amount) - num(r.received);
               const isOverdue = r.dueDate && cmpDate(r.dueDate, today) < 0 && unpaid > 0 && r.status !== "呆帳";
@@ -3348,7 +3345,6 @@ function ARModule({ data, update, user, logAudit }) {
                   <td style={{ whiteSpace: "nowrap" }}>{r.no}</td>
                   <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
                   <td>{r.customer}</td>
-                  <td style={{ fontSize: 12.5 }}>{r.invoiceNo || "—"}</td>
                   <td className="num">{fmtN(r.amount)}</td>
                   <td className="num">{fmtN(r.received)}</td>
                   <td className="num" style={{ fontWeight: 600, color: unpaid > 0 ? T.red : T.green }}>{fmtN(unpaid)}</td>
@@ -3381,7 +3377,6 @@ function ARForm({ form, setForm, onSave, onClose }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
         <Field label="建立日期" required><DateInput value={form.date} onChange={set("date")} /></Field>
         <Field label="客戶或公司名稱" required span={2}><input className="pl-input" value={form.customer} onChange={set("customer")} /></Field>
-        <Field label="發票號碼"><input className="pl-input" value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
         <Field label="請款金額" required><input className="pl-input" inputMode="decimal" value={form.amount} onChange={set("amount")} /></Field>
         <Field label="請款人"><input className="pl-input" value={form.requester} onChange={set("requester")} /></Field>
         <Field label="請款日期"><DateInput value={form.requestDate} onChange={set("requestDate")} /></Field>
