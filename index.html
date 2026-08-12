@@ -117,8 +117,8 @@ const validateDoc = (form) => {
 };
 /* 匯出與備份中心：manifest／匯出說明會標記此版本號 */
 const APP_VERSION = "PHASE-Ledger v1.0";
-/* 收支入帳規則：現金付款／收款免審核，直接入帳；其餘一律先進待審核 */
-const autoStatus = (payMethod) => (payMethod === "現金" ? "過審" : "待審核");
+/* 收支入帳規則：只有「銀行轉帳」需要送審，其餘付款／收款方式免審核直接入帳 */
+const autoStatus = (payMethod) => (payMethod === "銀行轉帳" ? "待審核" : "過審");
 
 /* ── 工具 ── */
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -1662,7 +1662,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, de
       ...EXP_EMPTY, id: uid("ex"), date, storeId: curStore,
       categoryId: resolveCat(r.categoryName), item: r.item.trim(), vendorId: r.vendorId, amount: num(r.amount),
       payMethod: r.payMethod, payer: r.payer || user.name, note: r.note.trim(),
-      /* 現金付款免審核直接入帳，其餘一律待審核，不再讓使用者自己選草稿／送審 */
+      /* 只有「銀行轉帳」要待審核，其餘付款方式免審核直接入帳，不再讓使用者自己選草稿／送審 */
       status: autoStatus(r.payMethod), createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       postClose: dayClosed,
     }));
@@ -1719,7 +1719,7 @@ function BatchExpenseModal({ data, user, curStore, nameOf, onClose, onCommit, de
 
       <datalist id="dl-batch-expcat">{cats.map((c) => <option key={c.id} value={c.name} />)}</datalist>
 
-      <div style={{ fontSize: 12.5, color: T.sub, marginTop: 8 }}>付款方式選「現金」的品項會直接入帳；其餘會進入待審核。</div>
+      <div style={{ fontSize: 12.5, color: T.sub, marginTop: 8 }}>付款方式選「銀行轉帳」的品項會進入待審核；其餘方式直接入帳。</div>
       <div style={{ display: "flex", alignItems: "center", marginTop: 12 }}>
         <button className="pl-btn" onClick={addRow}>＋ 新增一列</button>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
@@ -1776,7 +1776,7 @@ function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, def
       ...INC_EMPTY, id: uid("in"), date, storeId: curStore,
       categoryId: resolveCat(r.categoryName), item: r.item.trim(), amount: num(r.amount),
       payMethod: r.payMethod, payer: r.payer || user.name, note: r.note.trim(),
-      /* 現金收款免審核直接入帳，其餘一律待審核，不再讓使用者自己選草稿／送審 */
+      /* 只有「銀行轉帳」要待審核，其餘收款方式免審核直接入帳，不再讓使用者自己選草稿／送審 */
       status: autoStatus(r.payMethod), createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       postClose: dayClosed,
     }));
@@ -1828,7 +1828,7 @@ function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, def
 
       <datalist id="dl-batch-inccat">{cats.map((c) => <option key={c.id} value={c.name} />)}</datalist>
 
-      <div style={{ fontSize: 12.5, color: T.sub, marginTop: 8 }}>收款方式選「現金」的項目會直接入帳；其餘會進入待審核。</div>
+      <div style={{ fontSize: 12.5, color: T.sub, marginTop: 8 }}>收款方式選「銀行轉帳」的項目會進入待審核；其餘方式直接入帳。</div>
       <div style={{ display: "flex", alignItems: "center", marginTop: 12 }}>
         <button className="pl-btn" onClick={addRow}>＋ 新增一列</button>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
@@ -2003,7 +2003,7 @@ function ExpenseModule({ data, update, user, users, logAudit, logApproval, month
     if (!form.item.trim()) return alert("請填寫支出品項");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
     const old = form.id ? data.expenses.find((r) => r.id === form.id) : null;
-    /* 過審的紀錄由管理者修改時維持過審；其餘一律依付款方式自動判斷（現金免審核直接入帳，否則待審核） */
+    /* 過審的紀錄由管理者修改時維持過審；其餘一律依付款方式自動判斷（只有銀行轉帳待審核，其餘直接入帳） */
     const status = old && old.status === "過審" ? old.status : autoStatus(form.payMethod);
     const rec = { ...form, amount: num(form.amount), status };
     if (!rec.id) {
@@ -2283,7 +2283,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
     if (!form.item.trim()) return alert("請填寫收入項目");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
     const old = form.id ? data.incomes.find((r) => r.id === form.id) : null;
-    /* 過審的紀錄由管理者修改時維持過審；其餘一律依收款方式自動判斷（現金免審核直接入帳，否則待審核） */
+    /* 過審的紀錄由管理者修改時維持過審；其餘一律依收款方式自動判斷（只有銀行轉帳待審核，其餘直接入帳） */
     const status = old && old.status === "過審" ? old.status : autoStatus(form.payMethod);
     const rec = { ...form, amount: num(form.amount), status };
     if (!rec.id) {
@@ -2466,7 +2466,7 @@ function IncomeSection({ data, update, user, blockStores, nameOf, logAudit, logA
             <Field label="備註" span={3}><input className="pl-input" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></Field>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-            {editing.status !== "過審" && <span style={{ fontSize: 12, color: T.sub, marginRight: "auto" }}>收款方式選「現金」會直接入帳，否則送出後待審核</span>}
+            {editing.status !== "過審" && <span style={{ fontSize: 12, color: T.sub, marginRight: "auto" }}>收款方式選「銀行轉帳」送出後待審核，其餘方式直接入帳</span>}
             <button className="pl-btn" onClick={() => setEditing(null)}>取消</button>
             <button className="pl-btn primary" style={{ background: T.green, borderColor: T.green }} onClick={() => save(editing)}>
               {editing.status === "過審" ? "儲存修改" : "儲存"}
@@ -2637,7 +2637,7 @@ function ExpenseForm({ form, setForm, data, stores, onSave, onClose, user }) {
       </div>
       {!locked && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-          {form.status !== "過審" && <span style={{ fontSize: 12, color: T.sub, marginRight: "auto" }}>付款方式選「現金」會直接入帳，否則送出後待審核</span>}
+          {form.status !== "過審" && <span style={{ fontSize: 12, color: T.sub, marginRight: "auto" }}>付款方式選「銀行轉帳」送出後待審核，其餘方式直接入帳</span>}
           <button className="pl-btn" onClick={onClose}>取消</button>
           <button className="pl-btn primary" onClick={() => onSave(form)}>
             {form.status === "過審" ? "儲存修改" : "儲存"}
