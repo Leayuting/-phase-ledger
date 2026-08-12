@@ -5019,8 +5019,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   };
 
   /* ── 本次新增（尚未送出，先暫存在畫面上，可自由增減列） ── */
-  const blankExp = () => ({ key: uid("d"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金", docType: "", noDocReason: "" });
-  const blankInc = () => ({ key: uid("d"), categoryName: "", item: "", amount: "", payMethod: "現金", docType: "", noDocReason: "" });
+  const blankExp = () => ({ key: uid("d"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金" });
+  const blankInc = () => ({ key: uid("d"), categoryName: "", item: "", amount: "", payMethod: "現金" });
   const blankOrd = () => ({ key: uid("d"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", docType: "", noDocReason: "" });
   const [expRows, setExpRows] = useState([blankExp()]);
   const [incRows, setIncRows] = useState([blankInc()]);
@@ -5028,8 +5028,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   const setExpRow = (key, k, v) => setExpRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setIncRow = (key, k, v) => setIncRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setOrdRow = (key, k, v) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
-  const patchExpRow = (key, patch) => setExpRows((rows) => rows.map((r) => r.key === key ? { ...r, ...patch } : r));
-  const patchIncRow = (key, patch) => setIncRows((rows) => rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const patchOrdRow = (key, patch) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const delExpRow = (key) => setExpRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankExp()]);
   const delIncRow = (key) => setIncRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankInc()]);
@@ -5055,15 +5053,11 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       if (r.categoryName.trim() === "廠商原料叫貨") return alert("「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。");
       if (!r.item.trim()) return alert("支出：請填寫品項");
       if (!(num(r.amount) > 0)) return alert("支出：金額需大於 0");
-      const docErr = validateDoc(r);
-      if (docErr) return alert(`支出：${docErr}`);
     }
     for (const r of filledInc) {
       if (!r.categoryName.trim()) return alert("收入：請選擇或輸入類別");
       if (!r.item.trim()) return alert("收入：請填寫項目");
       if (!(num(r.amount) > 0)) return alert("收入：金額需大於 0");
-      const docErr = validateDoc(r);
-      if (docErr) return alert(`收入：${docErr}`);
     }
     for (const r of filledOrd) {
       if (!r.vendorId) return alert("叫貨：請選擇廠商");
@@ -5092,7 +5086,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       return {
         ...EXP_EMPTY, id: uid("ex"), date, storeId: curStore, categoryId, item: r.item.trim(),
         vendorId: r.vendorId, amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
-        docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "",
         status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       };
     });
@@ -5102,7 +5095,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       return {
         ...INC_EMPTY, id: uid("in"), date, storeId: curStore, categoryId, item: r.item.trim(),
         amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
-        docType: r.docType, noDocReason: r.docType === NO_DOC ? r.noDocReason.trim() : "",
         status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       };
     });
@@ -5287,7 +5279,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         <datalist id="dl-daily-expcat">{data.categories.filter((x) => x.active && x.id !== ORDER_CAT_ID).map((x) => <option key={x.id} value={x.name} />)}</datalist>
         <div className="pl-scroll-x">
           <table className="pl-table">
-            <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th>單據／憑證 *</th><th></th></tr></thead>
+            <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th></th></tr></thead>
             <tbody>
               {expRows.map((r) => (
                 <tr key={r.key}>
@@ -5302,7 +5294,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                       {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
                     </select>
                   </td>
-                  <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchExpRow(r.key, patch)} />
                   <td><button className="pl-btn small danger" onClick={() => delExpRow(r.key)}>✕</button></td>
                 </tr>
               ))}
@@ -5340,7 +5331,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         <datalist id="dl-daily-inccat">{(data.incomeCategories || []).filter((x) => x.active).map((x) => <option key={x.id} value={x.name} />)}</datalist>
         <div className="pl-scroll-x">
           <table className="pl-table">
-            <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th>單據／憑證 *</th><th></th></tr></thead>
+            <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th></th></tr></thead>
             <tbody>
               {incRows.map((r) => (
                 <tr key={r.key}>
@@ -5355,7 +5346,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                       {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
                     </select>
                   </td>
-                  <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchIncRow(r.key, patch)} />
                   <td><button className="pl-btn small danger" onClick={() => delIncRow(r.key)}>✕</button></td>
                 </tr>
               ))}
