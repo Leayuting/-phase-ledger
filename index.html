@@ -4945,6 +4945,10 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   const incCatOf = (id) => (data.incomeCategories || []).find((c) => c.id === id)?.name || "—";
   const userName = (id) => users.find((u) => u.id === id)?.name || "—";
   const salesPayItems = (data.salesPayItems || []).filter((p) => p.storeId === curStore && p.active);
+  /* 中山店底下的烘豆場：每日 Key 帳的支出／收入區塊也各自拆出烘豆場一個子區塊，
+     跟每日收支／廠商叫貨頁面「中山門市＋烘豆場」的呈現方式一致；日結營收與現金推算
+     維持只算中山門市自己（烘豆場沒有零售 POS 營收，不是這兩個區塊的概念） */
+  const roastStore = data.stores.find((s) => s.active && s.parentId === curStore);
 
   /* ── 日結營收表單 ── */
   const existing = data.dailySales.find((r) => r.date === date && r.storeId === curStore);
@@ -4986,13 +4990,19 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     setReopening(null);
   };
 
-  /* ── 當日已記錄清單 ── */
+  /* ── 當日已記錄清單（中山門市自己） ── */
   const dayExp = data.expenses.filter((r) => r.date === date && r.storeId === curStore && perm.canSeeRecord(user, r)).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
   const dayInc = (data.incomes || []).filter((r) => r.date === date && r.storeId === curStore && perm.canSeeRecord(user, r));
   const dayOrd = data.orders.filter((r) => r.date === date && r.storeId === curStore);
   const expSum = dayExp.reduce((a, r) => a + num(r.amount), 0);
   const incSum = dayInc.reduce((a, r) => a + num(r.amount), 0);
   const ordSum = dayOrd.reduce((a, r) => a + num(r.amount), 0);
+
+  /* ── 當日已記錄清單（烘豆場，若中山店底下有烘豆場才會有資料） ── */
+  const roastDayExp = roastStore ? data.expenses.filter((r) => r.date === date && r.storeId === roastStore.id && perm.canSeeRecord(user, r)).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")) : [];
+  const roastDayInc = roastStore ? (data.incomes || []).filter((r) => r.date === date && r.storeId === roastStore.id && perm.canSeeRecord(user, r)) : [];
+  const roastExpSum = roastDayExp.reduce((a, r) => a + num(r.amount), 0);
+  const roastIncSum = roastDayInc.reduce((a, r) => a + num(r.amount), 0);
 
   const submitDraft = (kind, rec) => {
     const key = kind === "exp" ? "expenses" : "incomes";
@@ -5007,35 +5017,45 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     update((d) => ({ ...d, [key]: d[key].filter((r) => r.id !== rec.id) }));
   };
 
-  /* 舊資料若仍留有草稿，保留一鍵送審（新流程送出後不會再產生草稿） */
-  const draftCount = dayExp.filter((r) => r.status === "草稿").length + dayInc.filter((r) => r.status === "草稿").length;
+  /* 舊資料若仍留有草稿，保留一鍵送審（新流程送出後不會再產生草稿；中山門市＋烘豆場一起送） */
+  const draftCount = dayExp.filter((r) => r.status === "草稿").length + dayInc.filter((r) => r.status === "草稿").length
+    + roastDayExp.filter((r) => r.status === "草稿").length + roastDayInc.filter((r) => r.status === "草稿").length;
   const submitAllDrafts = () => {
-    if (!confirm(`將當日 ${draftCount} 筆草稿（支出／收入）全部送出審核？`)) return;
+    if (!confirm(`將當日 ${draftCount} 筆草稿（支出／收入，含烘豆場）全部送出審核？`)) return;
+    const ids = [curStore, ...(roastStore ? [roastStore.id] : [])];
     update((d) => ({
       ...d,
-      expenses: d.expenses.map((r) => r.date === date && r.storeId === curStore && r.status === "草稿" ? { ...r, status: "待審核" } : r),
-      incomes: (d.incomes || []).map((r) => r.date === date && r.storeId === curStore && r.status === "草稿" ? { ...r, status: "待審核" } : r),
+      expenses: d.expenses.map((r) => r.date === date && ids.includes(r.storeId) && r.status === "草稿" ? { ...r, status: "待審核" } : r),
+      incomes: (d.incomes || []).map((r) => r.date === date && ids.includes(r.storeId) && r.status === "草稿" ? { ...r, status: "待審核" } : r),
     }));
   };
 
-  /* ── 本次新增（尚未送出，先暫存在畫面上，可自由增減列） ── */
+  /* ── 本次新增（尚未送出，先暫存在畫面上，可自由增減列）：中山門市與烘豆場各自獨立一份 ── */
   const blankExp = () => ({ key: uid("d"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金" });
   const blankInc = () => ({ key: uid("d"), categoryName: "", item: "", amount: "", payMethod: "現金" });
   const blankOrd = () => ({ key: uid("d"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", docType: "", noDocReason: "" });
   const [expRows, setExpRows] = useState([blankExp()]);
   const [incRows, setIncRows] = useState([blankInc()]);
   const [ordRows, setOrdRows] = useState([blankOrd()]);
+  const [roastExpRows, setRoastExpRows] = useState([blankExp()]);
+  const [roastIncRows, setRoastIncRows] = useState([blankInc()]);
   const setExpRow = (key, k, v) => setExpRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setIncRow = (key, k, v) => setIncRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setOrdRow = (key, k, v) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const setRoastExpRow = (key, k, v) => setRoastExpRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
+  const setRoastIncRow = (key, k, v) => setRoastIncRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const patchOrdRow = (key, patch) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const delExpRow = (key) => setExpRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankExp()]);
   const delIncRow = (key) => setIncRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankInc()]);
   const delOrdRow = (key) => setOrdRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankOrd()]);
+  const delRoastExpRow = (key) => setRoastExpRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankExp()]);
+  const delRoastIncRow = (key) => setRoastIncRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankInc()]);
 
   const filledExp = expRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
   const filledInc = incRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
   const filledOrd = ordRows.filter((r) => r.vendorId || r.items.trim() || num(r.amount) > 0);
+  const filledRoastExp = roastExpRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
+  const filledRoastInc = roastIncRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
 
   const resolveCat = (list, pending, name) => {
     const n = name.trim();
@@ -5059,6 +5079,17 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       if (!r.item.trim()) return alert("收入：請填寫項目");
       if (!(num(r.amount) > 0)) return alert("收入：金額需大於 0");
     }
+    for (const r of filledRoastExp) {
+      if (!r.categoryName.trim()) return alert("烘豆場支出：請選擇或輸入類別");
+      if (r.categoryName.trim() === "廠商原料叫貨") return alert("「廠商原料叫貨」為系統保留類別（用於廠商叫貨自動歸類），一般支出請選擇其他類別。");
+      if (!r.item.trim()) return alert("烘豆場支出：請填寫品項");
+      if (!(num(r.amount) > 0)) return alert("烘豆場支出：金額需大於 0");
+    }
+    for (const r of filledRoastInc) {
+      if (!r.categoryName.trim()) return alert("烘豆場收入：請選擇或輸入類別");
+      if (!r.item.trim()) return alert("烘豆場收入：請填寫項目");
+      if (!(num(r.amount) > 0)) return alert("烘豆場收入：金額需大於 0");
+    }
     for (const r of filledOrd) {
       if (!r.vendorId) return alert("叫貨：請選擇廠商");
       if (!(num(r.amount) > 0)) return alert("叫貨：金額需大於 0");
@@ -5074,7 +5105,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       const c = calcSales(sf);
       if (c.cash < 0 && !sf.diffReason.trim()) return alert("日結營收：非現金合計超過營業額，請填寫差異原因。");
     }
-    if (!salesFilled && filledExp.length === 0 && filledInc.length === 0 && filledOrd.length === 0) {
+    if (!salesFilled && filledExp.length === 0 && filledInc.length === 0 && filledOrd.length === 0
+      && filledRoastExp.length === 0 && filledRoastInc.length === 0) {
       return alert("尚未輸入任何資料。");
     }
 
@@ -5094,6 +5126,24 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       if (newCat) newIncCats.push(newCat);
       return {
         ...INC_EMPTY, id: uid("in"), date, storeId: curStore, categoryId, item: r.item.trim(),
+        amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
+        status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
+      };
+    });
+    const roastExpRecs = filledRoastExp.map((r) => {
+      const { id: categoryId, newCat } = resolveCat(data.categories, newExpCats, r.categoryName);
+      if (newCat) newExpCats.push(newCat);
+      return {
+        ...EXP_EMPTY, id: uid("ex"), date, storeId: roastStore.id, categoryId, item: r.item.trim(),
+        vendorId: r.vendorId, amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
+        status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
+      };
+    });
+    const roastIncRecs = filledRoastInc.map((r) => {
+      const { id: categoryId, newCat } = resolveCat(data.incomeCategories || [], newIncCats, r.categoryName);
+      if (newCat) newIncCats.push(newCat);
+      return {
+        ...INC_EMPTY, id: uid("in"), date, storeId: roastStore.id, categoryId, item: r.item.trim(),
         amount: num(r.amount), payMethod: r.payMethod, payer: user.name,
         status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       };
@@ -5120,6 +5170,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     if (dayWasLocked) {
       expRecs.forEach((r) => { r.postClose = true; });
       incRecs.forEach((r) => { r.postClose = true; });
+      roastExpRecs.forEach((r) => { r.postClose = true; });
+      roastIncRecs.forEach((r) => { r.postClose = true; });
     }
     if (salesRec) {
       if (!dayWasLocked) {
@@ -5143,22 +5195,26 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     }
 
     const newCatNames = [...newExpCats, ...newIncCats].map((c) => c.name);
+    const totalExpCount = expRecs.length + roastExpRecs.length;
+    const totalIncCount = incRecs.length + roastIncRecs.length;
     const parts = [
       salesFilled && "日結營收",
-      expRecs.length && `支出 ${expRecs.length} 筆${dayWasLocked ? "（日結後新增）" : ""}`,
-      incRecs.length && `收入 ${incRecs.length} 筆${dayWasLocked ? "（日結後新增）" : ""}`,
+      totalExpCount && `支出 ${totalExpCount} 筆${roastExpRecs.length ? `（含烘豆場 ${roastExpRecs.length} 筆）` : ""}${dayWasLocked ? "（日結後新增）" : ""}`,
+      totalIncCount && `收入 ${totalIncCount} 筆${roastIncRecs.length ? `（含烘豆場 ${roastIncRecs.length} 筆）` : ""}${dayWasLocked ? "（日結後新增）" : ""}`,
       ordRecs.length && `叫貨 ${ordRecs.length} 筆`,
     ].filter(Boolean).join("、");
     const confirmMsg = `確定送出今日資料？（${parts}）` + (newCatNames.length ? `\n將自動新增類別：${newCatNames.join("、")}` : "")
-      + (dayWasLocked && (expRecs.length || incRecs.length) ? `\n\n注意：當日日結已完成並鎖定現金推算，本次新增的支出／收入將標示為「日結後新增」，不會納入現金推算，除非後續執行「重新開啟日結／重新結帳」。` : "");
+      + (dayWasLocked && (totalExpCount || totalIncCount) ? `\n\n注意：當日日結已完成並鎖定現金推算，本次新增的支出／收入將標示為「日結後新增」，不會納入現金推算，除非後續執行「重新開啟日結／重新結帳」。` : "");
     if (!confirm(confirmMsg)) return;
 
+    const allExpRecs = [...expRecs, ...roastExpRecs];
+    const allIncRecs = [...incRecs, ...roastIncRecs];
     update((d) => ({
       ...d,
       categories: newExpCats.length ? [...d.categories, ...newExpCats] : d.categories,
       incomeCategories: newIncCats.length ? [...(d.incomeCategories || []), ...newIncCats] : d.incomeCategories,
-      expenses: expRecs.length ? [...d.expenses, ...expRecs] : d.expenses,
-      incomes: incRecs.length ? [...(d.incomes || []), ...incRecs] : d.incomes,
+      expenses: allExpRecs.length ? [...d.expenses, ...allExpRecs] : d.expenses,
+      incomes: allIncRecs.length ? [...(d.incomes || []), ...allIncRecs] : d.incomes,
       orders: ordRecs.length ? [...d.orders, ...ordRecs] : d.orders,
       dailySales: !salesRec ? d.dailySales
         : existing ? d.dailySales.map((r) => r.id === salesRec.id ? salesRec : r)
@@ -5167,6 +5223,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
 
     setExpRows([blankExp()]);
     setIncRows([blankInc()]);
+    setRoastExpRows([blankExp()]);
+    setRoastIncRows([blankInc()]);
     setOrdRows([blankOrd()]);
   };
 
@@ -5182,7 +5240,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{right}</div>
     </div>
   );
-  const totalNewItems = filledExp.length + filledInc.length + filledOrd.length;
+  const totalNewItems = filledExp.length + filledInc.length + filledOrd.length + filledRoastExp.length + filledRoastInc.length;
 
   /* 現金（推算）＝每日對帳資訊，獨立於日結營收區塊。日結一旦完成送出即鎖定當時的現金推算，
      之後不再自動重新計算；未完成日結前則即時試算（含本次尚未送出的新增支出／收入），
@@ -5253,7 +5311,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
 
       {/* ② 當日支出 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-        {cardHead(`② 當日支出（已記錄 ${dayExp.length} 筆・${fmt(expSum)}）`, null)}
+        {cardHead(`② 當日支出${roastStore ? "・" + nameOf(curStore) : ""}（已記錄 ${dayExp.length} 筆・${fmt(expSum)}）`, null)}
         {dayExp.length > 0 && (
           <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
             <table className="pl-table">
@@ -5303,9 +5361,62 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setExpRows([...expRows, blankExp()])}>＋ 新增一列</button>
       </div>
 
+      {/* ② 當日支出・烘豆場（中山店底下有烘豆場時才顯示，跟每日收支頁面「中山門市＋烘豆場」的呈現方式一致） */}
+      {roastStore && (
+        <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
+          {cardHead(`② 當日支出・${roastStore.name}（已記錄 ${roastDayExp.length} 筆・${fmt(roastExpSum)}）`, null)}
+          {roastDayExp.length > 0 && (
+            <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
+              <table className="pl-table">
+                <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th>付款人</th><th>狀態</th><th></th></tr></thead>
+                <tbody>
+                  {roastDayExp.map((r) => (
+                    <tr key={r.id}>
+                      <td>{catOf(r.categoryId)}</td><td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
+                      <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+                      <td>{r.payMethod}</td><td>{r.payer}</td>
+                      <td><Badge text={r.status} /></td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {r.status === "草稿" && <button className="pl-btn small" onClick={() => submitDraft("exp", r)}>送審</button>}
+                        {" "}<button className="pl-btn small danger" disabled={r.status === "過審" && !perm.isAdmin(user)} title={r.status === "過審" && !perm.isAdmin(user) ? "過審的支出無法刪除" : ""} onClick={() => delRec("exp", r)}>刪除</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>本次新增（尚未送出）</div>
+          <div className="pl-scroll-x">
+            <table className="pl-table">
+              <thead><tr><th>類別</th><th>品項</th><th className="num">金額</th><th>付款方式</th><th></th></tr></thead>
+              <tbody>
+                {roastExpRows.map((r) => (
+                  <tr key={r.key}>
+                    <td style={{ minWidth: 130 }}>
+                      <input className="pl-input" list="dl-daily-expcat" value={r.categoryName}
+                        onChange={(e) => setRoastExpRow(r.key, "categoryName", e.target.value)} placeholder="類別（可輸入）" />
+                    </td>
+                    <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="支出品項" value={r.item} onChange={(e) => setRoastExpRow(r.key, "item", e.target.value)} /></td>
+                    <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={r.amount} onChange={(e) => setRoastExpRow(r.key, "amount", e.target.value)} /></td>
+                    <td style={{ minWidth: 110 }}>
+                      <select className="pl-input" value={r.payMethod} onChange={(e) => setRoastExpRow(r.key, "payMethod", e.target.value)}>
+                        {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
+                      </select>
+                    </td>
+                    <td><button className="pl-btn small danger" onClick={() => delRoastExpRow(r.key)}>✕</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setRoastExpRows([...roastExpRows, blankExp()])}>＋ 新增一列</button>
+        </div>
+      )}
+
       {/* ③ 當日收入 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-        {cardHead(`③ 當日收入（已記錄 ${dayInc.length} 筆・${fmt(incSum)}）`, null)}
+        {cardHead(`③ 當日收入${roastStore ? "・" + nameOf(curStore) : ""}（已記錄 ${dayInc.length} 筆・${fmt(incSum)}）`, null)}
         {dayInc.length > 0 && (
           <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
             <table className="pl-table">
@@ -5354,6 +5465,59 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         </div>
         <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setIncRows([...incRows, blankInc()])}>＋ 新增一列</button>
       </div>
+
+      {/* ③ 當日收入・烘豆場 */}
+      {roastStore && (
+        <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
+          {cardHead(`③ 當日收入・${roastStore.name}（已記錄 ${roastDayInc.length} 筆・${fmt(roastIncSum)}）`, null)}
+          {roastDayInc.length > 0 && (
+            <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
+              <table className="pl-table">
+                <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th>經手人</th><th>狀態</th><th></th></tr></thead>
+                <tbody>
+                  {roastDayInc.map((r) => (
+                    <tr key={r.id}>
+                      <td>{incCatOf(r.categoryId)}</td><td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
+                      <td className="num" style={{ fontWeight: 600, color: T.green }}>{fmtN(r.amount)}</td>
+                      <td>{r.payMethod}</td><td>{r.payer}</td>
+                      <td><Badge text={r.status} /></td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {r.status === "草稿" && <button className="pl-btn small" onClick={() => submitDraft("inc", r)}>送審</button>}
+                        {" "}<button className="pl-btn small danger" disabled={r.status === "過審" && !perm.isAdmin(user)} title={r.status === "過審" && !perm.isAdmin(user) ? "過審的收入無法刪除" : ""} onClick={() => delRec("inc", r)}>刪除</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>本次新增（尚未送出）</div>
+          <div className="pl-scroll-x">
+            <table className="pl-table">
+              <thead><tr><th>類別</th><th>項目</th><th className="num">金額</th><th>收款方式</th><th></th></tr></thead>
+              <tbody>
+                {roastIncRows.map((r) => (
+                  <tr key={r.key}>
+                    <td style={{ minWidth: 130 }}>
+                      <input className="pl-input" list="dl-daily-inccat" value={r.categoryName}
+                        onChange={(e) => setRoastIncRow(r.key, "categoryName", e.target.value)} placeholder="類別（可輸入）" />
+                    </td>
+                    <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="收入項目" value={r.item} onChange={(e) => setRoastIncRow(r.key, "item", e.target.value)} /></td>
+                    <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={r.amount} onChange={(e) => setRoastIncRow(r.key, "amount", e.target.value)} /></td>
+                    <td style={{ minWidth: 110 }}>
+                      <select className="pl-input" value={r.payMethod} onChange={(e) => setRoastIncRow(r.key, "payMethod", e.target.value)}>
+                        {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
+                      </select>
+                    </td>
+                    <td><button className="pl-btn small danger" onClick={() => delRoastIncRow(r.key)}>✕</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setRoastIncRows([...roastIncRows, blankInc()])}>＋ 新增一列</button>
+        </div>
+      )}
 
       {/* ④ 當日叫貨 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
