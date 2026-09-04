@@ -100,7 +100,14 @@ const VENDOR_SEED = [
 const PAY_METHODS = ["現金", "銀行轉帳", "公司信用卡", "個人信用卡代墊", "其他"];
 const ORDER_BILLING = ["現結", "月結"];
 const ORDER_PAY_STATUS = ["未付款", "部分付款", "已付款"];
-const INVOICE_STATUS = ["未收到", "已收到", "不需發票"];
+/* 廠商月結重構（2026/08 上線）：月結廠商不再逐筆彙整叫貨紀錄對帳，改成使用者直接針對
+   「門市＋廠商＋結帳月份」輸入確認總額、登記分次付款。cutover 之前的月份維持舊版
+   （data.orders＋data.payables）唯讀口徑，不受影響；cutover 之後的月份改用
+   data.vendorSettlements／data.vendorPayments。判斷式集中於此，避免散落各處寫死月份字串。 */
+const VENDOR_SETTLE_CUTOVER = "2026/08";
+const isNewSettleFlow = (month) => month >= VENDOR_SETTLE_CUTOVER;
+const SETTLE_STATUS = ["草稿", "已確認", "已作廢"];
+const SETTLE_INVOICE_STATUS = ["尚未登錄發票", "已登錄發票", "不需發票"];
 const AR_STATUS = ["未請款", "已請款待收款", "部分收款", "已收款", "呆帳"];
 const SALES_STATUS = ["草稿", "待審核", "已審核", "退回修改"];
 const EXP_STATUS = ["草稿", "待審核", "過審", "已退回"];
@@ -379,6 +386,7 @@ function buildSeedData() {
     fixedItems: FIXED_SEED, fixedIncomeItems: [], incomeCategories: INCOME_CAT_SEED,
     salesPayItems: SALES_PAY_SEED,
     auditLogs: [], approvalLogs: [], payables: [],
+    vendorSettlements: [], vendorPayments: [],
   };
 }
 
@@ -634,24 +642,6 @@ function DocumentField({ docType, noDocReason, attachment, onChange, disabled, l
   );
 }
 
-/* 批次/快速新增表格列用：精簡版，只有下拉＋（無憑證時）原因輸入，不含附件上傳
-   （批次流程本來就不支援逐列上傳檔案；有需要補傳附件可事後用「編輯」進單筆表單處理）。 */
-function DocTypeCell({ docType, noDocReason, onChange }) {
-  return (
-    <td style={{ minWidth: docType === NO_DOC ? 160 : 110 }}>
-      <select className="pl-input" value={docType || ""} onChange={(e) => onChange({ docType: e.target.value, noDocReason: e.target.value === NO_DOC ? noDocReason : "" })}>
-        <option value="">憑證類型</option>
-        {DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-        <option value={NO_DOC}>{NO_DOC}</option>
-      </select>
-      {docType === NO_DOC && (
-        <input className="pl-input" style={{ marginTop: 4 }} value={noDocReason || ""}
-          onChange={(e) => onChange({ noDocReason: e.target.value })} placeholder="無憑證原因（選填）" />
-      )}
-    </td>
-  );
-}
-
 /* 列表用：唯讀顯示憑證類型（「無憑證」用紅字＋原因提示），有附件檔案時附上附件檢視按鈕 */
 function DocCell({ docType, noDocReason, attachment }) {
   if (!docType) return <AttachmentView value={attachment} />;
@@ -688,6 +678,22 @@ const acctStoreId = (stores, sid) => {
    （每個月結廠商的原始加總／發票金額／使用中的 payable，供明細下鑽或報表引用）。 */
 function adjustedOrderSum(data, month, storeFilter) {
   const acctOf = (sid) => acctStoreId(data.stores, sid);
+  if (isNewSettleFlow(month)) {
+    /* 2026/08 起：月結不再逐筆彙整叫貨紀錄，現結仍沿用 orders（即付、無應付餘額概念）；
+       月結金額改用使用者直接確認的 vendorSettlements 總額，只有「已確認」狀態才計入，
+       草稿尚未定案不計入金額、已作廢比照舊版「已取消」不計入。回傳形狀與舊版相容，
+       payable 欄位放的是 vendorSettlement 物件，供下鑽明細／報表沿用既有渲染邏輯。 */
+    const cashOrdM = data.orders.filter((o) => monthOf(o.date) === month && o.billing !== "月結" && (!storeFilter || acctOf(o.storeId) === storeFilter));
+    const settlementsM = (data.vendorSettlements || []).filter((s) =>
+      s.period === month && s.status === "已確認" && (!storeFilter || s.storeId === storeFilter)
+    );
+    let total = cashOrdM.reduce((a, o) => a + num(o.amount), 0);
+    const adjustments = settlementsM.map((s) => {
+      total += num(s.confirmedTotal);
+      return { vendorId: s.vendorId, storeId: s.storeId, rawSum: num(s.confirmedTotal), invoiceAmount: num(s.confirmedTotal), payable: s, list: [] };
+    });
+    return { total, cashOrdM, adjustments };
+  }
   const ordM = data.orders.filter((o) => monthOf(o.date) === month && (!storeFilter || acctOf(o.storeId) === storeFilter));
   const cashOrdM = ordM.filter((o) => o.billing !== "月結");
   const monthlyOrdM = ordM.filter((o) => o.billing === "月結");
@@ -715,6 +721,21 @@ function adjustedOrderSum(data, month, storeFilter) {
   });
   return { total, cashOrdM, adjustments };
 }
+
+/* 廠商月結（新版）共用計算：付款累計／餘額／付款狀態／是否逾期。多處（廠商月結頁面、
+   營運總覽的月結未付款／逾期提醒）都要算出一致的答案，統一寫在這裡避免各自算法兜不攏 */
+const settlementPaid = (settlementId, data) =>
+  (data.vendorPayments || []).filter((p) => p.settlementId === settlementId && !p.voided).reduce((a, p) => a + num(p.amount), 0);
+const settlementBalance = (s, data) => num(s.confirmedTotal) - settlementPaid(s.id, data);
+const settlementPayStatus = (s, data) => {
+  const paid = settlementPaid(s.id, data);
+  if (paid <= 0) return "未付款";
+  if (paid < num(s.confirmedTotal)) return "部分付款";
+  if (paid === num(s.confirmedTotal)) return "已付清";
+  return "溢付";
+};
+const isSettlementOverdue = (s, data, today) =>
+  s.status === "已確認" && settlementBalance(s, data) > 0 && s.dueDate && cmpDate(s.dueDate, today) < 0;
 
 const perm = {
   isAdmin: (u) => u.role === "系統管理者",
@@ -890,7 +911,11 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
   const profit = totalInc - totalExp;
 
   const arUnpaid = data.receivables.filter((r) => r.status !== "呆帳").reduce((a, r) => a + Math.max(0, num(r.amount) - num(r.received)), 0);
-  const monthlyUnpaid = data.orders.filter((o) => o.billing === "月結" && o.payStatus !== "已付款").reduce((a, o) => a + num(o.amount), 0);
+  /* 月結未付款金額：舊版（orders.payStatus）與新版（vendorSettlements 已確認未付餘額）並存期間
+     兩邊加總，不受月份／門店篩選影響（累積未清） */
+  const legacyMonthlyUnpaid = data.orders.filter((o) => o.billing === "月結" && o.payStatus !== "已付款").reduce((a, o) => a + num(o.amount), 0);
+  const newMonthlyUnpaid = (data.vendorSettlements || []).filter((s) => s.status === "已確認").reduce((a, s) => a + Math.max(0, settlementBalance(s, data)), 0);
+  const monthlyUnpaid = legacyMonthlyUnpaid + newMonthlyUnpaid;
   const tgt = data.targets[month] || {};
   const tgtSum = storeFilter ? num(tgt[storeFilter]) : retail.reduce((a, s) => a + num(tgt[s.id]), 0);
   /* 營業額達成率＝實收營業額 ÷ 營業額目標（不是只算單純的每日營業額），上限 100%，
@@ -962,7 +987,10 @@ function Dashboard({ data, update, user, month, setMonth, storeFilter, setStoreF
   const diffRecs = salesM.filter((s) => calcSales(s).diff !== 0);
   const pendingExp = data.expenses.filter((e) => e.status === "待審核");
   const overdueAR = data.receivables.filter((r) => r.dueDate && cmpDate(r.dueDate, today) < 0 && num(r.amount) - num(r.received) > 0 && r.status !== "呆帳");
-  const overdueAP = data.orders.filter((o) => o.billing === "月結" && o.payStatus !== "已付款" && o.dueDate && cmpDate(o.dueDate, today) < 0);
+  const legacyOverdueAP = data.orders.filter((o) => o.billing === "月結" && o.payStatus !== "已付款" && o.dueDate && cmpDate(o.dueDate, today) < 0);
+  const newOverdueAP = (data.vendorSettlements || []).filter((s) => isSettlementOverdue(s, data, today))
+    .map((s) => ({ id: s.id, vendorId: s.vendorId, dueDate: s.dueDate, amount: settlementBalance(s, data) }));
+  const overdueAP = [...legacyOverdueAP, ...newOverdueAP];
 
   const tooltipFmt = (v) => fmt(v);
   const gridStyle = { display: "grid", gap: 12 };
@@ -1815,107 +1843,6 @@ function BatchIncomeModal({ data, user, curStore, nameOf, onClose, onCommit, def
   );
 }
 
-function BatchOrderModal({ data, user, curStore, nameOf, onClose, onCommit, defaultDate }) {
-  const blank = () => ({ key: uid("row"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", docType: "", noDocReason: "", note: "" });
-  /* 若使用者正在查看單日檢視的某一天，新增時直接帶入那一天，而不是固定帶今天 */
-  const [date, setDate] = useState(defaultDate || todayStr());
-  const [rows, setRows] = useState([blank(), blank(), blank()]);
-  const vens = data.vendors.filter((v) => v.active !== false);
-
-  const setRow = (key, k, v) => setRows(rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
-  const patchRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
-  const addRow = () => setRows([...rows, blank()]);
-  const delRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
-  const filled = rows.filter((r) => r.vendorId || r.items.trim() || num(r.amount) > 0);
-  const total = filled.reduce((a, r) => a + num(r.amount), 0);
-
-  const save = () => {
-    if (!validDate(date)) return alert("請填寫正確日期（YYYY/MM/DD）");
-    if (filled.length === 0) return alert("尚未輸入任何明細。");
-    for (const r of filled) {
-      const n = rows.indexOf(r) + 1;
-      if (!r.vendorId) return alert(`第 ${n} 列：請選擇廠商`);
-      if (num(r.amount) <= 0) return alert(`第 ${n} 列：金額需大於 0`);
-      if (r.billing === "月結" && !validDate(r.dueDate)) return alert(`第 ${n} 列：月結請填寫預計付款日（YYYY/MM/DD）`);
-      /* 月結叫貨的憑證由「月結對帳」頁的統一發票統一登錄，這裡不強制；現結叫貨才要求單據／憑證 */
-      if (r.billing === "現結") {
-        const docErr = validateDoc(r);
-        if (docErr) return alert(`第 ${n} 列：${docErr}`);
-      }
-    }
-    const recs = filled.map((r) => ({
-      id: uid("po"), date, storeId: curStore, vendorId: r.vendorId, items: r.items.trim(),
-      amount: num(r.amount), billing: r.billing,
-      dueDate: r.billing === "月結" ? r.dueDate : "", paidDate: r.billing === "現結" ? date : "",
-      payStatus: r.billing === "現結" ? "已付款" : "未付款", invoiceStatus: "未收到",
-      invoiceNo: "", attachment: null,
-      docType: r.billing === "現結" ? r.docType : "", noDocReason: r.billing === "現結" && r.docType === NO_DOC ? r.noDocReason.trim() : "",
-      note: r.note.trim(), createdBy: user.id,
-    }));
-    onCommit(recs);
-  };
-
-  return (
-    <Modal title="批次新增叫貨" onClose={onClose} width={900}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end", marginBottom: 14 }}>
-        <Field label="叫貨日期（本批共用）" required>
-          <DateInput style={{ width: 150 }} value={date} onChange={(e) => setDate(e.target.value)} />
-        </Field>
-        <Field label="門店"><input className="pl-input" style={{ width: 110 }} value={nameOf(curStore)} disabled /></Field>
-        <div style={{ marginLeft: "auto", fontSize: 13.5, color: T.sub, paddingBottom: 8 }}>
-          已輸入 <b style={{ color: T.ink }}>{filled.length}</b> 筆・合計 <b style={{ color: T.ink }}>{fmt(total)}</b>
-        </div>
-      </div>
-
-      <div className="pl-scroll-x" style={{ maxHeight: "48vh", overflowY: "auto" }}>
-        <table className="pl-table">
-          <thead><tr>
-            <th style={{ width: 30 }}>#</th><th>廠商 *</th><th>品項說明</th>
-            <th className="num">金額 *</th><th>結帳</th><th>預計付款日</th><th>單據／憑證（現結才需要）</th><th>備註</th><th></th>
-          </tr></thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={r.key}>
-                <td style={{ color: T.sub }}>{i + 1}</td>
-                <td style={{ minWidth: 120 }}>
-                  <select className="pl-input" value={r.vendorId} onChange={(e) => setRow(r.key, "vendorId", e.target.value)}>
-                    <option value="">選擇</option>{vens.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                  </select>
-                </td>
-                <td style={{ minWidth: 150 }}><input className="pl-input" value={r.items} onChange={(e) => setRow(r.key, "items", e.target.value)} placeholder="品項說明" /></td>
-                <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} inputMode="decimal" value={r.amount} onChange={(e) => setRow(r.key, "amount", e.target.value)} placeholder="0" /></td>
-                <td style={{ minWidth: 85 }}>
-                  <select className="pl-input" value={r.billing} onChange={(e) => setRow(r.key, "billing", e.target.value)}>
-                    {ORDER_BILLING.map((b) => <option key={b}>{b}</option>)}
-                  </select>
-                </td>
-                <td style={{ minWidth: 115 }}>
-                  {r.billing === "月結"
-                    ? <DateInput value={r.dueDate} onChange={(e) => setRow(r.key, "dueDate", e.target.value)} />
-                    : <span style={{ color: T.sub, fontSize: 12.5 }}>現結・當日付清</span>}
-                </td>
-                {r.billing === "現結"
-                  ? <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchRow(r.key, patch)} />
-                  : <td style={{ fontSize: 12, color: T.sub }}>月結憑證於「月結對帳」登錄統一發票</td>}
-                <td style={{ minWidth: 100 }}><input className="pl-input" value={r.note} onChange={(e) => setRow(r.key, "note", e.target.value)} /></td>
-                <td><button className="pl-btn small danger" onClick={() => delRow(r.key)}>✕</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", marginTop: 12 }}>
-        <button className="pl-btn" onClick={addRow}>＋ 新增一列</button>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button className="pl-btn" onClick={onClose}>取消</button>
-          <button className="pl-btn primary" onClick={save}>儲存全部明細</button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
 function ExpenseModule({ data, update, user, users, logAudit, logApproval, month, setMonth }) {
   const [editing, setEditing] = useState(null);
   const [batchOpenFor, setBatchOpenFor] = useState(null); // storeId：哪個門店區塊的「新增支出」批次視窗開著
@@ -2629,308 +2556,518 @@ const ORD_EMPTY = {
 };
 
 function OrderModule({ data, update, user, users, logAudit, month, setMonth }) {
-  const [dateFlt, setDateFlt] = usePersisted("pl_orders_dateFlt", "");
-  const [editing, setEditing] = useState(null);
-  const [vFlt, setVFlt] = useState("");
-  const [view, setView] = useState("orders"); // orders | settle
-  const [openVendor, setOpenVendor] = useState(null);
-  const [batchOpenFor, setBatchOpenFor] = useState(null); // storeId：哪個門店區塊的「新增叫貨」批次視窗開著
-  const [selected, setSelected] = useState(new Set());
   const scope = perm.storeScope(user);
+  const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
+  const venOf = (id) => data.vendors.find((v) => v.id === id)?.name || "—";
+  /* 「廠商月結」（月結廠商，確認總額＋分次付款）／「現結登記」（現結廠商，即付單筆登記）
+     兩個分頁互相獨立：月結不再逐筆彙整叫貨紀錄，現結也不進入月結對帳／未付餘額計算 */
+  const [view, setView] = usePersisted("pl_orders_view", perm.isAcct(user) ? "settle" : "cash");
+
+  return (
+    <div>
+      <SectionTitle right={null}>廠商</SectionTitle>
+
+      <div className="no-print" style={{ display: "inline-flex", border: `1px solid ${T.line}`, borderRadius: 10, overflow: "hidden", marginBottom: 14 }}>
+        {[["settle", "廠商月結"], ["cash", "現結登記"]].map(([k, label]) => (
+          <button key={k} onClick={() => setView(k)} style={{
+            padding: "7px 20px", border: "none", cursor: "pointer", fontSize: 13.5,
+            background: view === k ? T.brown : "#fff",
+            color: view === k ? "#fff" : T.sub, fontWeight: view === k ? 700 : 400,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {view === "settle" && (perm.isAcct(user)
+        ? <VendorSettleSection data={data} update={update} user={user} users={users} logAudit={logAudit} scope={scope} nameOf={nameOf} venOf={venOf} />
+        : <Empty text="廠商月結僅開放會計與系統管理者。" />
+      )}
+
+      {view === "cash" && (
+        <CashOrderSection data={data} update={update} user={user} logAudit={logAudit} scope={scope} nameOf={nameOf} venOf={venOf} month={month} setMonth={setMonth} />
+      )}
+    </div>
+  );
+}
+
+/* ── 現結登記：現結（即付）廠商叫貨的簡化單筆登記，即付無應付餘額概念，
+   不進入「廠商月結」對帳／未付款統計 ── */
+function CashOrderSection({ data, update, user, logAudit, scope, nameOf, venOf, month, setMonth }) {
+  const [dateFlt, setDateFlt] = usePersisted("pl_cash_dateFlt", "");
+  const [vFlt, setVFlt] = useState("");
+  const [editing, setEditing] = useState(null);
   const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
-  /* 門店分頁只列「會計主體」層級：烘豆場不再單獨列成一個可選門店分頁，
-     選到中山店時會在頁面內以獨立區塊（中山門市／烘豆場）呈現，兩者資料各自獨立、
-     合計自動加總，不需要跨分頁切換或自行加總 */
   const topStores = stores.filter((s) => !s.parentId);
-  const [storeTab, setStoreTab] = usePersisted("pl_orders_storeTab", "");
+  const [storeTab, setStoreTab] = usePersisted("pl_cash_storeTab", "");
   const curStore = topStores.some((s) => s.id === storeTab) ? storeTab : (topStores[0]?.id || "");
   const childStores = stores.filter((s) => s.parentId === curStore);
   const blockStores = [...topStores.filter((s) => s.id === curStore), ...childStores];
-  const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
-  const venOf = (id) => data.vendors.find((v) => v.id === id)?.name || "—";
-  const today = todayStr();
-
   const viewStoreIds = blockStores.map((s) => s.id);
-  const visibleAll = data.orders.filter((r) => !scope || scope.includes(r.storeId));
+
+  const visibleAll = data.orders.filter((r) => r.billing !== "月結" && (!scope || scope.includes(r.storeId)));
   const visible = visibleAll.filter((r) => viewStoreIds.includes(r.storeId));
   const rows = visible.filter((r) => (dateFlt ? r.date === dateFlt : monthOf(r.date) === month) && (!vFlt || r.vendorId === vFlt))
     .sort((a, b) => cmpDate(a.date, b.date));
-
-  /* 統計 */
   const monthSum = rows.reduce((a, o) => a + num(o.amount), 0);
-  const todaySum = visible.filter((o) => o.date === today).reduce((a, o) => a + num(o.amount), 0);
-  const byVendor = {}; rows.forEach((o) => { byVendor[o.vendorId] = (byVendor[o.vendorId] || 0) + num(o.amount); });
-  /* 篩到只剩一個廠商時（例如選了廠商＋切到單日檢視，要看「該廠商當日叫貨明細」），
-     直接自動展開該廠商，不用使用者再多點一次；openVendor 是 "__none__" 代表使用者
-     自己手動收合過，這時候尊重使用者的選擇，不要又自動展開回去 */
-  const soleVendorId = Object.keys(byVendor).length === 1 ? Object.keys(byVendor)[0] : null;
-  const isVendorOpen = (vid) => openVendor === vid || (openVendor === null && soleVendorId === vid);
-  const toggleVendor = (vid) => setOpenVendor(isVendorOpen(vid) ? "__none__" : vid);
-  /* 「本月各廠商叫貨」依廠商分區（門市／生豆）分開顯示，各自小計 */
-  const catOfVendor = (vid) => {
-    const v = data.vendors.find((x) => x.id === vid);
-    return (v && v.category) || guessVendorCategory(v && v.name);
-  };
-  const vendorEntries = Object.entries(byVendor).sort((a, b) => b[1] - a[1]);
-  const vendorSections = VENDOR_CATEGORIES.map((cat) => {
-    const entries = vendorEntries.filter(([vid]) => catOfVendor(vid) === cat);
-    return { cat, entries, subtotal: entries.reduce((a, [, amt]) => a + amt, 0) };
-  });
-  const monthlyUnpaid = visible.filter((o) => o.billing === "月結" && o.payStatus !== "已付款").reduce((a, o) => a + num(o.amount), 0);
-  const overdue = visible.filter((o) => o.payStatus !== "已付款" && o.dueDate && cmpDate(o.dueDate, today) < 0);
-  const overdueSum = overdue.reduce((a, o) => a + num(o.amount), 0);
 
   const save = (form) => {
-    if (!form.date || !validDate(form.date)) return alert("請填寫正確叫貨日期（YYYY/MM/DD）");
-    if (!form.storeId) return alert("請選擇使用門店");
+    if (!form.date || !validDate(form.date)) return alert("請填寫正確日期（YYYY/MM/DD）");
+    if (!form.storeId) return alert("請選擇門店");
     if (!form.vendorId) return alert("請選擇廠商");
     if (num(form.amount) <= 0) return alert("金額需大於 0");
-    if (form.billing === "月結" && !form.dueDate) return alert("月結叫貨請填寫預計付款日");
-    if (form.dueDate && !validDate(form.dueDate)) return alert("預計付款日格式錯誤（需 YYYY/MM/DD）");
-    if (form.billing !== "月結") {
-      const docErr = validateDoc(form);
-      if (docErr) return alert(docErr);
-    }
-    const rec = { ...form, amount: num(form.amount) };
-    if (rec.billing === "月結") { rec.docType = ""; rec.noDocReason = ""; }
+    const rec = {
+      ...form, amount: num(form.amount), billing: "現結",
+      dueDate: "", paidDate: form.date, payStatus: "已付款", invoiceStatus: "不需發票",
+      docType: "", noDocReason: "", attachment: null,
+    };
     if (!rec.id) {
       rec.id = uid("po"); rec.createdBy = user.id;
       update((d) => ({ ...d, orders: [...d.orders, rec] }));
     } else {
       const old = data.orders.find((o) => o.id === rec.id);
-      logAudit("廠商叫貨", rec.id, old, rec, true);
+      logAudit("廠商叫貨（現結）", rec.id, old, rec, true);
       update((d) => ({ ...d, orders: d.orders.map((o) => (o.id === rec.id ? rec : o)) }));
     }
     setEditing(null);
   };
 
   const remove = (rec) => {
-    if (!confirm(`確定刪除 ${rec.date} ${venOf(rec.vendorId)} 的叫貨？`)) return;
-    logAudit("廠商叫貨", rec.id, rec, { ...rec, deleted: true });
+    if (!confirm(`確定刪除 ${rec.date} ${venOf(rec.vendorId)} 的現結登記？`)) return;
+    logAudit("廠商叫貨（現結）", rec.id, rec, { ...rec, deleted: true });
     update((d) => ({ ...d, orders: d.orders.filter((o) => o.id !== rec.id) }));
   };
 
-  const selRows = rows.filter((r) => selected.has(r.id));
-  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const toggleSelAllIn = (list) => setSelected((s) => {
-    const allSelected = list.length > 0 && list.every((r) => s.has(r.id));
-    const n = new Set(s);
-    list.forEach((r) => (allSelected ? n.delete(r.id) : n.add(r.id)));
-    return n;
-  });
-  const batchRemove = () => {
-    if (selRows.length === 0) return;
-    if (!confirm(`確定刪除選取的 ${selRows.length} 筆叫貨紀錄？`)) return;
-    selRows.forEach((r) => logAudit("廠商叫貨", r.id, r, { ...r, deleted: true }));
-    const ids = new Set(selRows.map((r) => r.id));
-    update((d) => ({ ...d, orders: d.orders.filter((o) => !ids.has(o.id)) }));
-    setSelected(new Set());
-  };
+  const newRec = (storeId) => ({ id: null, date: dateFlt || todayStr(), storeId, vendorId: "", items: "", amount: "", note: "" });
 
   return (
     <div>
-      <SectionTitle right={
-        <>
-          <MonthPicker value={month} exactDate={dateFlt} onChange={(m) => { setMonth(m); setDateFlt(""); }}
-            onToday={(d) => { setDateFlt(d); setMonth(monthOf(d)); }}
-            onPickDate={(d) => { setDateFlt(d); setMonth(monthOf(d)); }}
-            onClearDate={() => setDateFlt("")} />
-          <select className="pl-input" style={{ width: 140 }} value={vFlt} onChange={(e) => setVFlt(e.target.value)}>
-            <option value="">全部廠商</option>{data.vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-        </>
-      }>廠商</SectionTitle>
-
-      {/* 叫貨紀錄／月結對帳 切換（月結對帳僅會計與管理者） */}
-      {perm.isAcct(user) && (
-        <div className="no-print" style={{ display: "inline-flex", border: `1px solid ${T.line}`, borderRadius: 10, overflow: "hidden", marginBottom: 14 }}>
-          {[["orders", "叫貨紀錄"], ["settle", "月結對帳・匯款"]].map(([k, label]) => (
-            <button key={k} onClick={() => setView(k)} style={{
-              padding: "7px 20px", border: "none", cursor: "pointer", fontSize: 13.5,
-              background: view === k ? T.brown : "#fff",
-              color: view === k ? "#fff" : T.sub, fontWeight: view === k ? 700 : 400,
-            }}>{label}</button>
-          ))}
+      <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+        <MonthPicker value={month} exactDate={dateFlt} onChange={(m) => { setMonth(m); setDateFlt(""); }}
+          onToday={(d) => { setDateFlt(d); setMonth(monthOf(d)); }}
+          onPickDate={(d) => { setDateFlt(d); setMonth(monthOf(d)); }}
+          onClearDate={() => setDateFlt("")} />
+        <select className="pl-input" style={{ width: 140 }} value={vFlt} onChange={(e) => setVFlt(e.target.value)}>
+          <option value="">全部廠商</option>{data.vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+        <div style={{ marginLeft: "auto", fontSize: 13, color: T.sub }}>
+          {dateFlt ? `${dateFlt} 現結` : "本月現結"}合計 <b style={{ color: T.ink }}>{fmt(monthSum)}</b>
         </div>
-      )}
+      </div>
 
-      {view === "settle" && perm.isAcct(user) && (
-        <SettleSection data={data} update={update} user={user} users={users} logAudit={logAudit} scope={scope} nameOf={nameOf} venOf={venOf} />
-      )}
-
-      {view === "orders" && <>
       <StoreTabs stores={topStores} value={curStore} onChange={setStoreTab} />
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 12, marginBottom: 14 }}>
-        <KPI label="今日叫貨總額" value={fmt(todaySum)} />
-        <KPI label={dateFlt ? `${dateFlt} 叫貨總額` : "本月叫貨總額"} value={fmt(monthSum)} />
-        <KPI label="月結待付款總額" value={fmt(monthlyUnpaid)} />
-        <KPI label="已逾期未付款" value={fmt(overdueSum)} tone={overdueSum > 0 ? "red" : "green"} sub={overdue.length ? `${overdue.length} 筆逾期` : "無逾期款項"} />
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginBottom: 14 }}>
-        {vendorSections.map(({ cat, entries, subtotal }) => (
-          <div key={cat} className="pl-card" style={{ padding: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div className="pl-serif" style={{ fontWeight: 600 }}>
-                {cat}・{dateFlt ? `${dateFlt} 叫貨` : "本月叫貨"}
-              </div>
-              {entries.length > 0 && <b style={{ fontSize: 13.5 }}>{fmt(subtotal)}</b>}
-            </div>
-            {entries.length === 0 ? <Empty text={dateFlt ? "當天沒有叫貨紀錄" : "本月尚無叫貨紀錄"} /> : entries.map(([vid, amt]) => {
-              const opened = isVendorOpen(vid);
-              const detail = rows.filter((o) => o.vendorId === vid).sort((a, b) => cmpDate(a.date, b.date));
-              return (
-                <div key={vid} style={{ borderBottom: `1px dashed ${T.line}` }}>
-                  <div onClick={() => toggleVendor(vid)}
-                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13.5, cursor: "pointer" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ color: T.sub, fontSize: 10 }}>{opened ? "▼" : "▶"}</span>
-                      {venOf(vid)}
-                      <span style={{ color: T.sub, fontSize: 12 }}>{detail.length} 筆</span>
-                    </span>
-                    <b>{fmt(amt)}</b>
-                  </div>
-                  {opened && (
-                    <div style={{ padding: "2px 0 8px 22px" }}>
-                      {detail.map((o) => (
-                        <div key={o.id} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, color: T.ink, gap: 8 }}>
-                          <span style={{ fontVariantNumeric: "tabular-nums", color: T.sub, whiteSpace: "nowrap" }}>{o.date}</span>
-                          <span style={{ flex: 1, color: T.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.items || "—"}</span>
-                          <span style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmt(num(o.amount))}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-
-      {selRows.length > 0 && (
-        <div className="pl-card no-print" style={{ padding: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 13 }}>已選 {selRows.length} 筆</span>
-          <button className="pl-btn small danger" onClick={batchRemove}>批次刪除</button>
-          <button className="pl-btn small" onClick={() => setSelected(new Set())}>取消選取</button>
-        </div>
-      )}
 
       {blockStores.map((s) => {
         const bRows = rows.filter((r) => r.storeId === s.id);
         const bTotal = bRows.reduce((a, r) => a + num(r.amount), 0);
         return (
-          <div key={s.id} style={{ marginBottom: 26 }}>
+          <div key={s.id} style={{ marginBottom: 22 }}>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 10 }}>
               <div className="pl-serif" style={{ fontWeight: 700, fontSize: 16 }}>{s.name}</div>
-              <button className="pl-btn primary small" onClick={() => setBatchOpenFor(s.id)}>＋ 新增叫貨</button>
+              <button className="pl-btn primary small" onClick={() => setEditing(newRec(s.id))}>＋ 新增現結登記</button>
               <span style={{ marginLeft: "auto", fontSize: 12.5, color: T.sub }}>
                 {s.name}小計・{bRows.length} 筆・<b style={{ color: T.ink }}>{fmt(bTotal)}</b>
               </span>
             </div>
-            <OrderRowsTable rows={bRows} selected={selected} toggleSel={toggleSel} toggleSelAllIn={toggleSelAllIn}
-              nameOf={nameOf} venOf={venOf} today={today} setEditing={setEditing} remove={remove} emptyText={`${s.name}本月尚無叫貨紀錄`} />
+            <div className="pl-card pl-scroll-x">
+              <table className="pl-table">
+                <thead><tr><th>日期</th><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>備註</th><th></th></tr></thead>
+                <tbody>
+                  {bRows.length === 0 && <tr><td colSpan={6}><Empty text={`${s.name}尚無現結登記`} /></td></tr>}
+                  {bRows.map((r) => (
+                    <tr key={r.id}>
+                      <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
+                      <td>{venOf(r.vendorId)}</td>
+                      <td>{r.items}</td>
+                      <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+                      <td>{r.note}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        <button className="pl-btn small" onClick={() => setEditing({ ...r })}>編輯</button>
+                        {" "}<button className="pl-btn small danger" onClick={() => remove(r)}>刪除</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         );
       })}
 
-      {blockStores.length > 1 && (
-        <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-          <div className="pl-serif" style={{ fontWeight: 700, marginBottom: 10 }}>{nameOf(curStore)}叫貨合計</div>
-          <div style={{ display: "grid", gap: 6 }}>
-            {blockStores.map((s) => (
-              <StoreRow key={s.id} label={`${s.name}小計`}
-                value={fmt(rows.filter((r) => r.storeId === s.id).reduce((a, r) => a + num(r.amount), 0))} />
-            ))}
-            <StoreRow label={`${nameOf(curStore)}合計（${blockStores.map((s) => s.name).join("＋")}）`} value={fmt(monthSum)} strong />
+      {editing && (
+        <Modal title={editing.id ? "編輯現結登記" : "新增現結登記"} onClose={() => setEditing(null)} width={560}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+            <Field label="日期" required><DateInput value={editing.date} onChange={(e) => setEditing({ ...editing, date: e.target.value })} /></Field>
+            <Field label="門店" required>
+              <select className="pl-input" value={editing.storeId} onChange={(e) => setEditing({ ...editing, storeId: e.target.value })}>
+                <option value="">選擇</option>{stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </Field>
+            <Field label="廠商" required>
+              <select className="pl-input" value={editing.vendorId} onChange={(e) => setEditing({ ...editing, vendorId: e.target.value })}>
+                <option value="">選擇廠商</option>{data.vendors.filter((v) => v.active).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+            </Field>
+            <Field label="金額" required><input className="pl-input" inputMode="decimal" value={editing.amount} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} placeholder="0" /></Field>
+            <Field label="品項說明" span={2}><input className="pl-input" value={editing.items} onChange={(e) => setEditing({ ...editing, items: e.target.value })} placeholder="例：濾掛盒 500 個" /></Field>
+            <Field label="備註" span={2}><input className="pl-input" value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></Field>
           </div>
-        </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+            <button className="pl-btn" onClick={() => setEditing(null)}>取消</button>
+            <button className="pl-btn primary" onClick={() => save(editing)}>儲存</button>
+          </div>
+        </Modal>
       )}
-
-      </>}
-
-      {batchOpenFor && (
-        <BatchOrderModal data={data} user={user} curStore={batchOpenFor} nameOf={nameOf} defaultDate={dateFlt}
-          onClose={() => setBatchOpenFor(null)}
-          onCommit={(recs) => { update((d) => ({ ...d, orders: [...d.orders, ...recs] })); setBatchOpenFor(null); }} />
-      )}
-      {editing && <OrderForm form={editing} setForm={setEditing} data={data} stores={stores} onSave={save} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-/* 廠商叫貨表格：門店區塊共用同一份表格結構，只是餵進去的 rows 不同 */
-function OrderRowsTable({ rows, selected, toggleSel, toggleSelAllIn, nameOf, venOf, today, setEditing, remove, emptyText }) {
-  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
-  return (
-    <div className="pl-card pl-scroll-x" style={{ marginBottom: 14 }}>
-      <table className="pl-table">
-        <thead><tr>
-          <th style={{ width: 30 }}><input type="checkbox" checked={allSelected} onChange={() => toggleSelAllIn(rows)} /></th>
-          <th>日期</th><th>使用門店</th><th>廠商</th><th>品項說明</th>
-          <th className="num">金額</th><th>結帳方式</th><th>預計付款日</th><th>付款狀態</th><th>發票狀態</th><th>附件</th><th></th>
-        </tr></thead>
-        <tbody>
-          {rows.length === 0 && <tr><td colSpan={12}><Empty text={emptyText} /></td></tr>}
-          {rows.map((r) => {
-            const isOverdue = r.payStatus !== "已付款" && r.dueDate && cmpDate(r.dueDate, today) < 0;
-            return (
-              <tr key={r.id}>
-                <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSel(r.id)} /></td>
-                <td style={{ whiteSpace: "nowrap" }}>{r.date}</td>
-                <td>{nameOf(r.storeId)}</td>
-                <td>{venOf(r.vendorId)}</td>
-                <td style={{ maxWidth: 240 }}>{r.items}</td>
-                <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
-                <td>{r.billing}</td>
-                <td style={{ whiteSpace: "nowrap", color: isOverdue ? T.red : undefined }}>
-                  {r.dueDate || "—"}{isOverdue && <Badge text="逾期" tone="red" />}
-                </td>
-                <td><Badge text={r.payStatus} /></td>
-                <td><Badge text={r.invoiceStatus} /></td>
-                <td>{r.billing === "月結"
-                  ? <span style={{ fontSize: 12.5, color: T.sub }}>月結憑證見對帳</span>
-                  : <DocCell docType={r.docType} noDocReason={r.noDocReason} attachment={r.attachment} />}</td>
-                <td style={{ whiteSpace: "nowrap" }}>
-                  <button className="pl-btn small" onClick={() => setEditing({ ...r })}>編輯</button>
-                  {" "}<button className="pl-btn small danger" onClick={() => remove(r)}>刪除</button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-/* ── 月結對帳・匯款區：當月月結叫貨，次月憑廠商發票匯款 ── */
-/* 月結廠商以「一個月一張統一發票」為原則：叫貨明細先按廠商＋月份彙整成一筆應付帳款，
-   不要求每筆叫貨都個別綁發票；廠商開立統一發票後，使用者在該應付帳款登錄發票號碼／金額／
-   附件，系統自動核對發票金額與已彙整的叫貨總金額，兩者不一致時要求填寫差異原因才能儲存。 */
-function SettleSection({ data, update, user, users, logAudit, scope, nameOf, venOf }) {
-  const [settleMonth, setSettleMonth] = usePersisted("pl_settle_month", prevMonth(monthOf(todayStr())));
-  const [open, setOpen] = useState(null);
-  const [invoiceEditing, setInvoiceEditing] = useState(null); // { vid, period, ...payable }
-  const [cancelling, setCancelling] = useState(null); // { payable, rawSum, reason }
+/* ────────────────────────────────────────────
+   廠商月結（2026/08 上線）：不再逐筆彙整叫貨紀錄，改由使用者直接針對「門市＋廠商＋結帳月份」
+   輸入確認總金額，登記分次付款，系統自動算未付餘額與付款狀態。2026/08 之前的月份沿用舊版
+   （叫貨紀錄＋統一發票調整）唯讀顯示，不提供新增／編輯，避免新舊兩套資料同時存在。
+──────────────────────────────────────────────*/
+function VendorSettleSection({ data, update, user, users, logAudit, scope, nameOf, venOf }) {
   const today = todayStr();
   const userName = (id) => (users || []).find((u) => u.id === id)?.name || "—";
-  const acctOf = (sid) => acctStoreId(data.stores, sid);
-
-  /* 月結對帳也比照「叫貨紀錄」用門店分頁呈現，點選門店才顯示該門店的對帳資料 */
   const stores = data.stores.filter((s) => s.active && (!scope || scope.includes(s.id)));
   const topStores = stores.filter((s) => !s.parentId);
-  const [storeTab, setStoreTab] = usePersisted("pl_settle_storeTab", "");
+  const [storeTab, setStoreTab] = usePersisted("pl_vsettle_storeTab", "");
   const curStore = topStores.some((s) => s.id === storeTab) ? storeTab : (topStores[0]?.id || "");
+  const [settleMonth, setSettleMonth] = usePersisted("pl_vsettle_month", isNewSettleFlow(monthOf(today)) ? monthOf(today) : VENDOR_SETTLE_CUTOVER);
+  const [vFlt, setVFlt] = useState("");
+  const [formOpen, setFormOpen] = useState(null);
+  const [paymentOpen, setPaymentOpen] = useState(null);
+  const [historyOpen, setHistoryOpen] = useState(null);
+  const [voiding, setVoiding] = useState(null); // { settlement, reason }
+  const [unconfirming, setUnconfirming] = useState(null); // { settlement, reason }
+  const [showLegacy, setShowLegacy] = useState(false);
+
+  const settlementsAll = (data.vendorSettlements || []).filter((s) =>
+    s.period === settleMonth && s.storeId === curStore && (!scope || scope.includes(s.storeId))
+  );
+  const settlements = settlementsAll.filter((s) => !vFlt || s.vendorId === vFlt)
+    .sort((a, b) => num(b.confirmedTotal) - num(a.confirmedTotal));
+  const confirmed = settlements.filter((s) => s.status === "已確認");
+  const confirmedTotal = confirmed.reduce((a, s) => a + num(s.confirmedTotal), 0);
+  const paidTotal = confirmed.reduce((a, s) => a + settlementPaid(s.id, data), 0);
+  const unpaidTotal = confirmed.reduce((a, s) => a + Math.max(0, settlementBalance(s, data)), 0);
+  const overdueTotal = confirmed.filter((s) => isSettlementOverdue(s, data, today)).reduce((a, s) => a + Math.max(0, settlementBalance(s, data)), 0);
+
+  const usedVendorIds = new Set(settlementsAll.filter((s) => s.status !== "已作廢").map((s) => s.vendorId));
+  const availableVendors = data.vendors.filter((v) => v.active && !usedVendorIds.has(v.id));
+
+  const legacyPayablesThisCutover = (data.payables || []).filter((p) => p.period === VENDOR_SETTLE_CUTOVER && !p.cancelled && p.storeId === curStore);
+
+  const openNew = () => setFormOpen({
+    id: null, vendorId: "", storeId: curStore, period: settleMonth, confirmedTotal: "", dueDate: "",
+    invoiceStatus: "尚未登錄發票", invoiceDate: "", invoiceAmount: "", attachment: null, note: "",
+  });
+  const openEdit = (s) => setFormOpen({ ...s });
+
+  const saveSettlement = (form) => {
+    if (!form.vendorId) return alert("請選擇廠商");
+    if (!(num(form.confirmedTotal) > 0)) return alert("請填寫確認總金額，需大於 0");
+    if (form.dueDate && !validDate(form.dueDate)) return alert("預計付款日格式錯誤（需 YYYY/MM/DD）");
+    if (form.invoiceStatus === "已登錄發票") {
+      if (!form.invoiceDate || !validDate(form.invoiceDate)) return alert("請填寫正確發票日期（YYYY/MM/DD）");
+      if (!(num(form.invoiceAmount) > 0)) return alert("請填寫發票金額");
+    }
+    const dup = (data.vendorSettlements || []).find((s) =>
+      s.vendorId === form.vendorId && s.storeId === form.storeId && s.period === form.period && s.status !== "已作廢" && s.id !== form.id
+    );
+    if (dup) return alert("這個門市＋廠商＋結帳月份已經有一筆月結了，請直接編輯該筆，不要重複建立。");
+    const rec = {
+      ...form, confirmedTotal: num(form.confirmedTotal),
+      invoiceAmount: form.invoiceStatus === "已登錄發票" ? num(form.invoiceAmount) : (form.invoiceAmount === "" ? "" : num(form.invoiceAmount)),
+    };
+    if (!rec.id) {
+      rec.id = uid("vs"); rec.status = "草稿";
+      rec.createdBy = user.id; rec.createdAt = nowStamp();
+      rec.updatedBy = user.id; rec.updatedAt = nowStamp();
+      rec.confirmedBy = null; rec.confirmedAt = null;
+      rec.unconfirmedBy = null; rec.unconfirmedAt = null; rec.unconfirmReason = "";
+      rec.voidedBy = null; rec.voidedAt = null; rec.voidReason = "";
+      update((d) => ({ ...d, vendorSettlements: [...(d.vendorSettlements || []), rec] }));
+    } else {
+      const old = data.vendorSettlements.find((s) => s.id === rec.id);
+      rec.updatedBy = user.id; rec.updatedAt = nowStamp();
+      logAudit("廠商月結", rec.id, old, rec, true);
+      update((d) => ({ ...d, vendorSettlements: d.vendorSettlements.map((s) => (s.id === rec.id ? rec : s)) }));
+    }
+    setFormOpen(null);
+  };
+
+  const confirmSettlement = (s) => {
+    if (!confirm(`確認 ${venOf(s.vendorId)}・${monthLabel(s.period)} 的月結金額 ${fmt(s.confirmedTotal)}？\n確認後金額才會計入營運總覽／月度報表的廠商叫貨支出。`)) return;
+    const rec = { ...s, status: "已確認", confirmedBy: user.id, confirmedAt: nowStamp() };
+    logAudit("廠商月結", rec.id, s, rec, true);
+    update((d) => ({ ...d, vendorSettlements: d.vendorSettlements.map((x) => (x.id === rec.id ? rec : x)) }));
+  };
+
+  const confirmUnconfirm = () => {
+    if (!unconfirming.reason.trim()) return alert("請填寫解除確認的原因");
+    const s = unconfirming.settlement;
+    const rec = { ...s, status: "草稿", unconfirmedBy: user.id, unconfirmedAt: nowStamp(), unconfirmReason: unconfirming.reason.trim() };
+    logAudit("廠商月結", rec.id, s, rec, true);
+    update((d) => ({ ...d, vendorSettlements: d.vendorSettlements.map((x) => (x.id === rec.id ? rec : x)) }));
+    setUnconfirming(null);
+  };
+
+  const confirmVoid = () => {
+    if (!voiding.reason.trim()) return alert("請填寫作廢原因");
+    const s = voiding.settlement;
+    const rec = { ...s, status: "已作廢", voidedBy: user.id, voidedAt: nowStamp(), voidReason: voiding.reason.trim() };
+    logAudit("廠商月結", rec.id, s, rec, true);
+    update((d) => ({ ...d, vendorSettlements: d.vendorSettlements.map((x) => (x.id === rec.id ? rec : x)) }));
+    setVoiding(null);
+  };
+
+  const openPayment = (s) => setPaymentOpen({ settlementId: s.id, amount: "", payDate: today, payMethod: "銀行轉帳", bankAccount: "", last5: "", attachment: null, note: "" });
+  const savePayment = (form) => {
+    if (!(num(form.amount) > 0)) return alert("請填寫付款金額，需大於 0");
+    if (!validDate(form.payDate)) return alert("請填寫正確付款日期（YYYY/MM/DD）");
+    const rec = { ...form, id: uid("vp"), amount: num(form.amount), voided: false, createdBy: user.id, createdAt: nowStamp() };
+    logAudit("廠商付款", rec.id, null, rec, true);
+    update((d) => ({ ...d, vendorPayments: [...(d.vendorPayments || []), rec] }));
+    setPaymentOpen(null);
+  };
+  const voidPayment = (p) => {
+    const reason = prompt("請填寫作廢這筆付款紀錄的原因（更正用，不會刪除紀錄）：");
+    if (reason === null) return;
+    if (!reason.trim()) return alert("請填寫作廢原因");
+    const rec = { ...p, voided: true, voidedBy: user.id, voidedAt: nowStamp(), voidReason: reason.trim() };
+    logAudit("廠商付款", rec.id, p, rec, true);
+    update((d) => ({ ...d, vendorPayments: d.vendorPayments.map((x) => (x.id === rec.id ? rec : x)) }));
+  };
+
+  return (
+    <div>
+      <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+        <span style={{ fontSize: 13, color: T.sub }}>結帳月份</span>
+        <MonthPicker value={settleMonth} onChange={setSettleMonth} />
+        {isNewSettleFlow(settleMonth) && (
+          <select className="pl-input" style={{ width: 140 }} value={vFlt} onChange={(e) => setVFlt(e.target.value)}>
+            <option value="">全部廠商</option>{data.vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+          </select>
+        )}
+      </div>
+
+      <StoreTabs stores={topStores} value={curStore} onChange={setStoreTab} />
+
+      {!isNewSettleFlow(settleMonth) ? (
+        <LegacySettleReadOnly data={data} users={users} scope={scope} nameOf={nameOf} venOf={venOf} month={settleMonth} curStore={curStore} />
+      ) : (
+        <>
+          {settleMonth === VENDOR_SETTLE_CUTOVER && legacyPayablesThisCutover.length > 0 && (
+            <div className="pl-card" style={{ padding: 14, marginBottom: 14, background: T.yellowBg, border: `1px solid ${T.yellow}` }}>
+              <div style={{ fontSize: 13, color: T.ink, marginBottom: 8 }}>
+                偵測到 {legacyPayablesThisCutover.length} 筆 {monthLabel(VENDOR_SETTLE_CUTOVER)}的舊版月結資料（登錄統一發票／確認匯款）。
+                系統不會自動搬移這些資料，請人工核對金額與付款狀態後，於下方手動建立新版廠商月結，並自行登記實際已收到的付款。
+              </div>
+              <button className="pl-btn small" onClick={() => setShowLegacy(true)}>查看舊版彙總</button>
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 12, marginBottom: 14 }}>
+            <KPI label="當月確認總額" value={fmt(confirmedTotal)} />
+            <KPI label="已付款總額" value={fmt(paidTotal)} tone="green" />
+            <KPI label="未付款總額" value={fmt(unpaidTotal)} tone={unpaidTotal > 0 ? "yellow" : "green"} />
+            <KPI label="已逾期未付款總額" value={fmt(overdueTotal)} tone={overdueTotal > 0 ? "red" : "green"} />
+          </div>
+
+          <div style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+            <button className="pl-btn primary" onClick={openNew} disabled={availableVendors.length === 0}>＋ 新增月結</button>
+            {availableVendors.length === 0 && <span style={{ fontSize: 12.5, color: T.sub }}>{nameOf(curStore)}這個月的廠商都已建立月結</span>}
+          </div>
+
+          {settlements.length === 0 && <div className="pl-card" style={{ padding: 24 }}><Empty text={`${nameOf(curStore)}這個月尚未建立任何月結`} /></div>}
+
+          {settlements.map((s) => {
+            const paid = settlementPaid(s.id, data);
+            const balance = settlementBalance(s, data);
+            const payStat = settlementPayStatus(s, data);
+            const overdue = isSettlementOverdue(s, data, today);
+            const payCount = (data.vendorPayments || []).filter((p) => p.settlementId === s.id).length;
+            return (
+              <div key={s.id} className="pl-card" style={{ marginBottom: 12, padding: "13px 16px", opacity: s.status === "已作廢" ? 0.55 : 1 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14 }}>
+                  <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 120 }}>{venOf(s.vendorId)}</div>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(s.confirmedTotal)}</div>
+                    {s.status === "已確認" && <div style={{ fontSize: 11.5, color: T.sub }}>已付 {fmt(paid)}・餘額 {fmt(balance)}</div>}
+                  </div>
+                  <Badge text={s.status} tone={s.status === "已確認" ? "green" : s.status === "已作廢" ? "gray" : "yellow"} />
+                  {s.status === "已確認" && <Badge text={overdue ? "已逾期未付" : payStat} tone={payStat === "已付清" ? "green" : overdue || payStat === "溢付" ? "red" : "yellow"} />}
+                  <Badge text={s.invoiceStatus} tone={s.invoiceStatus === "已登錄發票" ? "green" : "gray"} />
+                  <div style={{ fontSize: 12.5, color: T.sub }}>預計付款日 {s.dueDate || "—"}</div>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {s.status === "草稿" && <button className="pl-btn small" onClick={() => openEdit(s)}>編輯</button>}
+                    {s.status === "草稿" && <button className="pl-btn small primary" onClick={() => confirmSettlement(s)}>確認</button>}
+                    {s.status === "已確認" && perm.isAdmin(user) && <button className="pl-btn small" onClick={() => setUnconfirming({ settlement: s, reason: "" })}>解除確認</button>}
+                    {s.status === "已確認" && <button className="pl-btn small primary" onClick={() => openPayment(s)}>登記付款</button>}
+                    {payCount > 0 && <button className="pl-btn small" onClick={() => setHistoryOpen(s)}>查看付款紀錄（{payCount}）</button>}
+                    {s.status !== "已作廢" && <button className="pl-btn small danger" onClick={() => setVoiding({ settlement: s, reason: "" })}>作廢</button>}
+                  </div>
+                </div>
+                {s.note && <div style={{ marginTop: 8, fontSize: 12.5, color: T.sub }}>備註：{s.note}</div>}
+                {s.status === "已作廢" && <div style={{ marginTop: 8, fontSize: 12, color: T.sub }}>作廢原因：{s.voidReason}・{userName(s.voidedBy)}・{s.voidedAt}</div>}
+                {s.status === "草稿" && s.unconfirmReason && <div style={{ marginTop: 8, fontSize: 12, color: T.sub }}>解除確認原因：{s.unconfirmReason}・{userName(s.unconfirmedBy)}・{s.unconfirmedAt}</div>}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {formOpen && (
+        <VendorSettlementForm form={formOpen} setForm={setFormOpen}
+          vendorOptions={formOpen.id ? data.vendors : availableVendors} storeName={nameOf(curStore)}
+          onSave={saveSettlement} onClose={() => setFormOpen(null)} />
+      )}
+      {paymentOpen && (
+        <VendorPaymentForm form={paymentOpen} setForm={setPaymentOpen}
+          vendorName={venOf((settlements.find((s) => s.id === paymentOpen.settlementId) || {}).vendorId)}
+          onSave={savePayment} onClose={() => setPaymentOpen(null)} />
+      )}
+      {historyOpen && (
+        <VendorPaymentHistoryModal settlement={historyOpen} data={data} venOf={venOf} userName={userName}
+          onVoid={voidPayment} onClose={() => setHistoryOpen(null)} />
+      )}
+      {voiding && (
+        <Modal title={`作廢月結・${venOf(voiding.settlement.vendorId)}・${monthLabel(voiding.settlement.period)}`} onClose={() => setVoiding(null)} width={480}>
+          <div style={{ fontSize: 13, color: T.sub, marginBottom: 12 }}>
+            作廢後，這筆月結不再計入營運總覽／月度報表的廠商叫貨支出與未付款統計，但紀錄仍會保留供查閱。
+          </div>
+          <Field label="作廢原因" required>
+            <input className="pl-input" value={voiding.reason} onChange={(e) => setVoiding({ ...voiding, reason: e.target.value })} placeholder="例：金額登錄有誤、重複建立" />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+            <button className="pl-btn" onClick={() => setVoiding(null)}>返回</button>
+            <button className="pl-btn danger" onClick={confirmVoid}>確定作廢</button>
+          </div>
+        </Modal>
+      )}
+      {unconfirming && (
+        <Modal title={`解除確認・${venOf(unconfirming.settlement.vendorId)}・${monthLabel(unconfirming.settlement.period)}`} onClose={() => setUnconfirming(null)} width={480}>
+          <div style={{ fontSize: 13, color: T.sub, marginBottom: 12 }}>
+            解除確認後這筆月結會退回「草稿」狀態，暫時不計入營運總覽／月度報表金額，直到重新確認為止；期間仍可修改金額或其他內容。
+          </div>
+          <Field label="解除確認原因" required>
+            <input className="pl-input" value={unconfirming.reason} onChange={(e) => setUnconfirming({ ...unconfirming, reason: e.target.value })} placeholder="例：金額需要更正" />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+            <button className="pl-btn" onClick={() => setUnconfirming(null)}>返回</button>
+            <button className="pl-btn danger" onClick={confirmUnconfirm}>確定解除確認</button>
+          </div>
+        </Modal>
+      )}
+      {showLegacy && (
+        <Modal title={`舊版月結彙總（唯讀）・${nameOf(curStore)}・${monthLabel(VENDOR_SETTLE_CUTOVER)}`} onClose={() => setShowLegacy(false)} width={920}>
+          <LegacySettleReadOnly data={data} users={users} scope={scope} nameOf={nameOf} venOf={venOf} month={VENDOR_SETTLE_CUTOVER} curStore={curStore} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function VendorSettlementForm({ form, setForm, vendorOptions, storeName, onSave, onClose }) {
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const vendorName = (vendorOptions.find((v) => v.id === form.vendorId) || {}).name || "";
+  return (
+    <Modal title={form.id ? "編輯廠商月結" : "新增廠商月結"} onClose={onClose} width={620}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+        <Field label="廠商" required>
+          {form.id
+            ? <input className="pl-input" value={vendorName} disabled />
+            : <select className="pl-input" value={form.vendorId} onChange={set("vendorId")}>
+                <option value="">選擇廠商</option>{vendorOptions.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>}
+        </Field>
+        <Field label="門市"><input className="pl-input" value={storeName} disabled /></Field>
+        <Field label="結帳月份"><input className="pl-input" value={monthLabel(form.period)} disabled /></Field>
+        <Field label="確認總金額" required><input className="pl-input" inputMode="decimal" value={form.confirmedTotal} onChange={set("confirmedTotal")} placeholder="0" /></Field>
+        <Field label="預計付款日"><DateInput value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} /></Field>
+        <Field label="發票狀態">
+          <select className="pl-input" value={form.invoiceStatus} onChange={set("invoiceStatus")}>
+            {SETTLE_INVOICE_STATUS.map((s) => <option key={s}>{s}</option>)}
+          </select>
+        </Field>
+        {form.invoiceStatus === "已登錄發票" && <>
+          <Field label="發票日期" required><DateInput value={form.invoiceDate} onChange={(e) => setForm({ ...form, invoiceDate: e.target.value })} /></Field>
+          <Field label="發票金額" required><input className="pl-input" inputMode="decimal" value={form.invoiceAmount} onChange={set("invoiceAmount")} /></Field>
+          <Field label="發票附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
+        </>}
+        <Field label="備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} /></Field>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+        <button className="pl-btn" onClick={onClose}>取消</button>
+        <button className="pl-btn primary" onClick={() => onSave(form)}>儲存</button>
+      </div>
+    </Modal>
+  );
+}
+
+function VendorPaymentForm({ form, setForm, vendorName, onSave, onClose }) {
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  return (
+    <Modal title={`登記付款・${vendorName}`} onClose={onClose} width={560}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+        <Field label="付款金額" required><input className="pl-input" inputMode="decimal" value={form.amount} onChange={set("amount")} placeholder="0" /></Field>
+        <Field label="付款日期" required><DateInput value={form.payDate} onChange={(e) => setForm({ ...form, payDate: e.target.value })} /></Field>
+        <Field label="付款方式">
+          <select className="pl-input" value={form.payMethod} onChange={set("payMethod")}>
+            {PAY_METHODS.map((p) => <option key={p}>{p}</option>)}
+          </select>
+        </Field>
+        <Field label="匯出帳戶"><input className="pl-input" value={form.bankAccount} onChange={set("bankAccount")} /></Field>
+        <Field label="匯款帳號末五碼"><input className="pl-input" value={form.last5} onChange={set("last5")} /></Field>
+        <Field label="付款憑證附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
+        <Field label="備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} /></Field>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+        <button className="pl-btn" onClick={onClose}>取消</button>
+        <button className="pl-btn primary" onClick={() => onSave(form)}>儲存</button>
+      </div>
+    </Modal>
+  );
+}
+
+function VendorPaymentHistoryModal({ settlement, data, venOf, userName, onVoid, onClose }) {
+  const payments = (data.vendorPayments || []).filter((p) => p.settlementId === settlement.id).sort((a, b) => cmpDate(a.payDate, b.payDate));
+  return (
+    <Modal title={`付款紀錄・${venOf(settlement.vendorId)}・${monthLabel(settlement.period)}`} onClose={onClose} width={760}>
+      <div className="pl-scroll-x">
+        <table className="pl-table">
+          <thead><tr><th>付款日期</th><th className="num">金額</th><th>付款方式</th><th>匯出帳戶</th><th>末五碼</th><th>備註</th><th>登記人</th><th></th></tr></thead>
+          <tbody>
+            {payments.length === 0 && <tr><td colSpan={8}><Empty text="尚無付款紀錄" /></td></tr>}
+            {payments.map((p) => (
+              <tr key={p.id} style={{ opacity: p.voided ? 0.5 : 1 }}>
+                <td style={{ whiteSpace: "nowrap" }}>{p.payDate}</td>
+                <td className="num" style={{ fontWeight: 600 }}>{fmtN(p.amount)}</td>
+                <td>{p.payMethod}</td>
+                <td>{p.bankAccount}</td>
+                <td>{p.last5}</td>
+                <td>{p.note}{p.voided && <span style={{ color: T.red }}>（已作廢：{p.voidReason}）</span>}</td>
+                <td>{userName(p.createdBy)}</td>
+                <td>{!p.voided && <button className="pl-btn small danger" onClick={() => onVoid(p)}>作廢</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
+  );
+}
+
+/* ── 舊版月結彙總（唯讀）：2026/08 前的月份沿用舊口徑（叫貨紀錄彙整＋統一發票調整），
+   新版廠商月結不提供在這些月份新增／編輯，只保留查詢，避免新舊兩套月結資料同時存在 ── */
+function LegacySettleReadOnly({ data, users, scope, nameOf, venOf, month, curStore }) {
+  const today = todayStr();
+  const acctOf = (sid) => acctStoreId(data.stores, sid);
+  const [open, setOpen] = useState(null);
 
   const monthly = data.orders.filter((o) =>
-    o.billing === "月結" && monthOf(o.date) === settleMonth && (!scope || scope.includes(o.storeId)) && acctOf(o.storeId) === curStore
+    o.billing === "月結" && monthOf(o.date) === month && (!scope || scope.includes(o.storeId)) && acctOf(o.storeId) === curStore
   );
-
-  /* 依「廠商＋門店」彙整；每組（廠商＋門店＋月份）對應唯一一筆應付帳款／統一發票——
-     廠商如果同一個月同時服務多間門店，會拆成多筆各自登錄發票、各自對帳、各自確認匯款，
-     不會合併成一筆整體金額 */
   const byGroup = {};
   monthly.forEach((o) => {
     const sid = acctOf(o.storeId);
@@ -2942,90 +3079,20 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
     const unpaid = g.list.filter((o) => o.payStatus !== "已付款");
     const dueDates = g.list.map((o) => o.dueDate).filter(Boolean).sort(cmpDate);
     const overdue = unpaid.some((o) => o.dueDate && cmpDate(o.dueDate, today) < 0);
-    const payable = (data.payables || []).find((p) => p.vendorId === g.vid && p.storeId === g.storeId && p.period === settleMonth) || null;
+    const payable = (data.payables || []).find((p) => p.vendorId === g.vid && p.storeId === g.storeId && p.period === month) || null;
     return { ...g, total, unpaid, due: dueDates[0] || "—", overdue, payable };
   }).sort((a, b) => b.total - a.total);
-
   const totalAll = groups.reduce((a, g) => a + g.total, 0);
   const totalUnpaid = groups.reduce((a, g) => a + g.unpaid.reduce((x, o) => x + num(o.amount), 0), 0);
 
-  const settle = (g) => {
-    if (g.unpaid.length === 0) return;
-    if (!g.payable || g.payable.cancelled) {
-      if (!confirm(`${venOf(g.vid)} 這個月尚未登錄統一發票。月結應憑發票匯款，仍要確認匯款？`)) return;
-    } else if (g.payable.status === "金額不符") {
-      if (!confirm(`${venOf(g.vid)} 這個月的發票金額與叫貨總額不符（原因：${g.payable.discrepancyReason || "未填寫"}）。仍要確認匯款？`)) return;
-    } else {
-      if (!confirm(`確認已匯款給 ${venOf(g.vid)}？將把 ${g.unpaid.length} 筆月結叫貨標記為已付款（付款日 ${today}）。`)) return;
-    }
-    const ids = g.unpaid.map((o) => o.id);
-    g.unpaid.forEach((o) => logAudit("廠商叫貨", o.id, o, { ...o, payStatus: "已付款", paidDate: today }, true));
-    update((d) => ({
-      ...d,
-      orders: d.orders.map((o) => ids.includes(o.id) ? { ...o, payStatus: "已付款", paidDate: today } : o),
-    }));
-  };
-
-  const openInvoiceForm = (g) => {
-    setInvoiceEditing(g.payable
-      ? { ...g.payable }
-      : { id: null, vendorId: g.vid, storeId: g.storeId, period: settleMonth, invoiceAmount: "", invoiceDate: today, attachment: null, discrepancyReason: "" });
-  };
-
-  const saveInvoice = (form, ordersTotal) => {
-    if (!validDate(form.invoiceDate)) return alert("請填寫正確發票日期（YYYY/MM/DD）");
-    const invoiceAmount = num(form.invoiceAmount);
-    if (invoiceAmount <= 0) return alert("發票金額需大於 0");
-    const diff = invoiceAmount - ordersTotal;
-    if (diff !== 0 && !form.discrepancyReason.trim()) {
-      return alert(`發票金額（${fmt(invoiceAmount)}）與本月彙整的叫貨總額（${fmt(ordersTotal)}）不一致，差異 ${fmt(diff)}，請先填寫差異原因才能儲存。`);
-    }
-    const rec = {
-      ...form, invoiceAmount, ordersTotal, discrepancy: diff,
-      status: diff === 0 ? "已核對" : "金額不符",
-      /* 存檔（不論新增或編輯）一律視為重新套用發票調整，取消狀態自動解除 */
-      cancelled: false, cancelledBy: null, cancelledAt: null, cancelReason: "",
-      adjustedBy: user.id, adjustedAt: nowStamp(),
-    };
-    if (!rec.id) {
-      rec.id = uid("ap"); rec.createdBy = user.id; rec.createdAt = nowStamp();
-      update((d) => ({ ...d, payables: [...(d.payables || []), rec] }));
-    } else {
-      const old = (data.payables || []).find((p) => p.id === rec.id);
-      logAudit("應付帳款", rec.id, old, rec, true);
-      update((d) => ({ ...d, payables: (d.payables || []).map((p) => p.id === rec.id ? rec : p) }));
-    }
-    setInvoiceEditing(null);
-  };
-
-  const openCancel = (g) => setCancelling({ payable: g.payable, rawSum: g.total, reason: "" });
-
-  const confirmCancel = () => {
-    if (!cancelling.reason.trim()) return alert("請填寫取消原因");
-    const payable = cancelling.payable;
-    const rec = { ...payable, cancelled: true, cancelledBy: user.id, cancelledAt: nowStamp(), cancelReason: cancelling.reason.trim() };
-    logAudit("應付帳款", rec.id, payable, rec, true);
-    update((d) => ({ ...d, payables: (d.payables || []).map((p) => (p.id === rec.id ? rec : p)) }));
-    setCancelling(null);
-  };
-
   return (
     <div>
-      <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
-        <span style={{ fontSize: 13, color: T.sub }}>結帳月份（貨款月）</span>
-        <MonthPicker value={settleMonth} onChange={setSettleMonth} />
-        <div style={{ marginLeft: "auto", display: "flex", gap: 18, fontSize: 13 }}>
-          <span style={{ color: T.sub }}>{nameOf(curStore)}月結總額 <b style={{ color: T.ink }}>{fmt(totalAll)}</b></span>
-          <span style={{ color: T.sub }}>待匯款 <b style={{ color: totalUnpaid > 0 ? T.red : T.green }}>{fmt(totalUnpaid)}</b></span>
-        </div>
+      <div className="pl-card" style={{ padding: 12, marginBottom: 12, fontSize: 12.5, color: T.sub }}>
+        {monthLabel(month)}為新版廠商月結上線（{monthLabel(VENDOR_SETTLE_CUTOVER)}）前的資料，沿用舊版口徑唯讀顯示，無法在此新增或編輯。
       </div>
-
-      <StoreTabs stores={topStores} value={curStore} onChange={setStoreTab} />
-
-      <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 10 }}>
-        彙整 {nameOf(curStore)}・{monthLabel(settleMonth)}各廠商月結叫貨。每個廠商在每間門店各自一個月開立一張統一發票，
-        不需要每筆叫貨都個別綁發票——叫貨明細先歸屬在這裡，等廠商開立發票後，於該筆登錄發票號碼／
-        金額／附件即可，系統會自動核對發票金額跟該門店的叫貨總額；同一廠商如果同時服務多間門店，切到不同門店分頁會分開對帳。
+      <div className="pl-card no-print" style={{ padding: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center", fontSize: 13 }}>
+        <span style={{ color: T.sub }}>{nameOf(curStore)}月結總額 <b style={{ color: T.ink }}>{fmt(totalAll)}</b></span>
+        <span style={{ color: T.sub }}>待匯款 <b style={{ color: totalUnpaid > 0 ? T.red : T.green }}>{fmt(totalUnpaid)}</b></span>
       </div>
 
       {groups.length === 0 && <div className="pl-card" style={{ padding: 24 }}><Empty text="此月份沒有月結叫貨紀錄" /></div>}
@@ -3033,199 +3100,45 @@ function SettleSection({ data, update, user, users, logAudit, scope, nameOf, ven
       {groups.map((g) => {
         const groupKey = g.vid + "__" + g.storeId;
         return (
-        <div key={groupKey} className="pl-card" style={{ marginBottom: 12, overflow: "hidden" }}>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, padding: "13px 16px", cursor: "pointer" }}
-            onClick={() => setOpen(open === groupKey ? null : groupKey)}>
-            <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 120 }}>{venOf(g.vid)}</div>
-            <div style={{ fontSize: 13, color: T.sub }}>{g.list.length} 筆</div>
-            <div>
+          <div key={groupKey} className="pl-card" style={{ marginBottom: 12, overflow: "hidden" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, padding: "13px 16px", cursor: "pointer" }}
+              onClick={() => setOpen(open === groupKey ? null : groupKey)}>
+              <div className="pl-serif" style={{ fontWeight: 700, fontSize: 15, minWidth: 120 }}>{venOf(g.vid)}</div>
+              <div style={{ fontSize: 13, color: T.sub }}>{g.list.length} 筆</div>
               <div style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                 {g.payable && !g.payable.cancelled ? fmt(g.payable.invoiceAmount) : fmt(g.total)}
               </div>
-              {g.payable && !g.payable.cancelled && g.payable.invoiceAmount !== g.total && (
-                <div style={{ fontSize: 11.5, color: T.sub }}>原始叫貨 {fmt(g.total)}</div>
-              )}
+              {(!g.payable || g.payable.cancelled) && <Badge text="尚未登錄統一發票" tone="yellow" />}
+              {g.payable && !g.payable.cancelled && g.payable.status === "已核對" && <Badge text="發票已核對" tone="green" />}
+              {g.payable && !g.payable.cancelled && g.payable.status === "金額不符" && <Badge text={`發票金額不符（差 ${fmt(g.payable.discrepancy)}）`} tone="red" />}
+              {g.payable && g.payable.cancelled && <Badge text="發票調整已取消" tone="gray" />}
+              {g.unpaid.length === 0 ? <Badge text="已匯款" tone="green" /> : <Badge text={g.overdue ? "已逾期未匯" : "待匯款"} tone={g.overdue ? "red" : "yellow"} />}
+              <div style={{ fontSize: 12.5, color: T.sub }}>預計付款日 {g.due}</div>
+              <span style={{ marginLeft: "auto", color: T.sub, fontSize: 12 }}>{open === groupKey ? "▲" : "▼"}</span>
             </div>
-            {(!g.payable || g.payable.cancelled) && <Badge text="尚未登錄統一發票" tone="yellow" />}
-            {g.payable && !g.payable.cancelled && g.payable.status === "已核對" && <Badge text="發票已核對" tone="green" />}
-            {g.payable && !g.payable.cancelled && g.payable.status === "金額不符" && <Badge text={`發票金額不符（差 ${fmt(g.payable.discrepancy)}）`} tone="red" />}
-            {g.payable && g.payable.cancelled && <Badge text="發票調整已取消" tone="gray" />}
-            {g.unpaid.length === 0
-              ? <Badge text="已匯款" tone="green" />
-              : <Badge text={g.overdue ? "已逾期未匯" : "待匯款"} tone={g.overdue ? "red" : "yellow"} />}
-            <div style={{ fontSize: 12.5, color: T.sub }}>預計付款日 {g.due}</div>
-            <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-              <button className="pl-btn small" onClick={(e) => { e.stopPropagation(); openInvoiceForm(g); }}>
-                {g.payable ? "編輯統一發票" : "登錄統一發票"}
-              </button>
-              {g.payable && !g.payable.cancelled && (
-                <button className="pl-btn small danger" onClick={(e) => { e.stopPropagation(); openCancel(g); }}>
-                  取消發票調整
-                </button>
-              )}
-              {g.unpaid.length > 0 && (
-                <button className="pl-btn primary" onClick={(e) => { e.stopPropagation(); settle(g); }}>
-                  確認匯款 {fmt(g.unpaid.reduce((a, o) => a + num(o.amount), 0))}
-                </button>
-              )}
-              <span style={{ color: T.sub, fontSize: 12 }}>{open === groupKey ? "▲" : "▼"}</span>
-            </div>
+            {open === groupKey && (
+              <div className="pl-scroll-x" style={{ borderTop: `1px solid ${T.line}` }}>
+                <table className="pl-table">
+                  <thead><tr><th>日期</th><th>門店</th><th>品項</th><th className="num">金額</th><th>預計付款日</th><th>付款狀態</th></tr></thead>
+                  <tbody>
+                    {g.list.sort((a, b) => cmpDate(a.date, b.date)).map((o) => (
+                      <tr key={o.id}>
+                        <td style={{ whiteSpace: "nowrap" }}>{o.date}</td>
+                        <td>{nameOf(o.storeId)}</td>
+                        <td>{o.items}</td>
+                        <td className="num" style={{ fontWeight: 600 }}>{fmtN(o.amount)}</td>
+                        <td style={{ whiteSpace: "nowrap" }}>{o.dueDate || "—"}</td>
+                        <td><Badge text={o.payStatus} tone={o.payStatus === "已付款" ? "green" : "yellow"} />{o.paidDate ? <span style={{ fontSize: 12, color: T.sub }}> {o.paidDate}</span> : null}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-
-          {g.payable && !g.payable.cancelled && (
-            <div style={{ padding: "0 16px 12px", fontSize: 12.5, color: T.sub }}>
-              統一發票 {g.payable.invoiceDate}・發票金額 {fmt(g.payable.invoiceAmount)}
-              ・原始叫貨累計 {fmt(g.payable.ordersTotal)}
-              {g.payable.discrepancy !== 0 && <>・調整差額 <b style={{ color: g.payable.discrepancy > 0 ? T.red : T.green }}>{g.payable.discrepancy > 0 ? "+" : ""}{fmt(g.payable.discrepancy)}</b></>}
-              {g.payable.status === "金額不符" && <span style={{ color: T.red }}>・差異原因：{g.payable.discrepancyReason}</span>}
-              {g.payable.attachment && <> ・<AttachmentView value={g.payable.attachment} /></>}
-              <br />調整人員 {userName(g.payable.adjustedBy || g.payable.createdBy)}・調整時間 {g.payable.adjustedAt || g.payable.createdAt}
-            </div>
-          )}
-          {g.payable && g.payable.cancelled && (
-            <div style={{ padding: "0 16px 12px", fontSize: 12.5, color: T.sub }}>
-              先前登錄的發票（金額 {fmt(g.payable.invoiceAmount)}）已取消調整，「廠商叫貨」統計恢復採原始叫貨累計 {fmt(g.payable.ordersTotal)}。
-              <br />取消原因：{g.payable.cancelReason}・取消人員 {userName(g.payable.cancelledBy)}・取消時間 {g.payable.cancelledAt}
-            </div>
-          )}
-
-          {open === groupKey && (
-            <div className="pl-scroll-x" style={{ borderTop: `1px solid ${T.line}` }}>
-              <table className="pl-table">
-                <thead><tr>
-                  <th>日期</th><th>門店</th><th>品項</th>
-                  <th className="num">金額</th><th>預計付款日</th><th>付款狀態</th><th></th>
-                </tr></thead>
-                <tbody>
-                  {g.list.sort((a, b) => cmpDate(a.date, b.date)).map((o) => (
-                    <tr key={o.id}>
-                      <td style={{ whiteSpace: "nowrap" }}>{o.date}</td>
-                      <td>{nameOf(o.storeId)}</td>
-                      <td>{o.items}</td>
-                      <td className="num" style={{ fontWeight: 600 }}>{fmtN(o.amount)}</td>
-                      <td style={{ whiteSpace: "nowrap", color: o.payStatus !== "已付款" && o.dueDate && cmpDate(o.dueDate, today) < 0 ? T.red : T.ink }}>{o.dueDate || "—"}</td>
-                      <td>
-                        <Badge text={o.payStatus} tone={o.payStatus === "已付款" ? "green" : "yellow"} />
-                        {o.paidDate ? <span style={{ fontSize: 12, color: T.sub }}> {o.paidDate}</span> : null}
-                      </td>
-                      <td></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
         );
       })}
-
-      {invoiceEditing && (() => {
-        const g = groups.find((x) => x.vid === invoiceEditing.vendorId && x.storeId === invoiceEditing.storeId);
-        const ordersTotal = g ? g.total : 0;
-        return (
-          <PayableInvoiceForm form={invoiceEditing} setForm={setInvoiceEditing} vendorName={venOf(invoiceEditing.vendorId)}
-            storeName={nameOf(invoiceEditing.storeId)}
-            ordersTotal={ordersTotal} onSave={(f) => saveInvoice(f, ordersTotal)} onClose={() => setInvoiceEditing(null)} />
-        );
-      })()}
-
-      {cancelling && (
-        <Modal title={`取消發票調整・${venOf(cancelling.payable.vendorId)}・${nameOf(cancelling.payable.storeId)}・${monthLabel(cancelling.payable.period)}`} onClose={() => setCancelling(null)} width={480}>
-          <div style={{ fontSize: 13, color: T.sub, marginBottom: 12 }}>
-            取消後，「廠商叫貨」統計（營運總覽／月報／年報）會恢復採用系統原始叫貨累計金額 {fmt(cancelling.rawSum)}，
-            不再套用發票金額 {fmt(cancelling.payable.invoiceAmount)}。這筆發票登錄紀錄仍會保留供查閱，之後也可以重新編輯套用。
-          </div>
-          <Field label="取消原因" required>
-            <input className="pl-input" value={cancelling.reason} onChange={(e) => setCancelling({ ...cancelling, reason: e.target.value })}
-              placeholder="例：發票金額登錄有誤、廠商重開發票" />
-          </Field>
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-            <button className="pl-btn" onClick={() => setCancelling(null)}>返回</button>
-            <button className="pl-btn danger" onClick={confirmCancel}>確定取消調整</button>
-          </div>
-        </Modal>
-      )}
     </div>
-  );
-}
-
-function PayableInvoiceForm({ form, setForm, vendorName, storeName, ordersTotal, onSave, onClose }) {
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
-  const diff = num(form.invoiceAmount) - ordersTotal;
-  return (
-    <Modal title={`登錄統一發票・${vendorName}・${storeName}・${monthLabel(form.period)}`} onClose={onClose} width={560}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-        <Field label="本月叫貨總額（系統彙整，唯讀）"><input className="pl-input" value={fmt(ordersTotal)} disabled /></Field>
-        <Field label="發票金額" required><input className="pl-input" inputMode="decimal" value={form.invoiceAmount} onChange={set("invoiceAmount")} /></Field>
-        <Field label="發票日期" required><DateInput value={form.invoiceDate} onChange={set("invoiceDate")} /></Field>
-        <Field label="發票附件" span={2}><AttachmentInput value={form.attachment} onChange={(a) => setForm({ ...form, attachment: a })} /></Field>
-      </div>
-      {form.invoiceAmount !== "" && diff !== 0 && (
-        <div style={{ marginTop: 12, background: T.redBg, borderRadius: 8, padding: 10 }}>
-          <div style={{ color: T.red, fontSize: 13, marginBottom: 6 }}>
-            發票金額與叫貨總額不一致，差異 {fmt(diff)}（{diff > 0 ? "發票較高" : "發票較低"}），請填寫原因才能儲存。
-          </div>
-          <input className="pl-input" value={form.discrepancyReason} onChange={set("discrepancyReason")} placeholder="差異原因（例：含運費、折讓、單筆漏登）" />
-        </div>
-      )}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-        <button className="pl-btn" onClick={onClose}>取消</button>
-        <button className="pl-btn primary" onClick={() => onSave(form)}>儲存</button>
-      </div>
-    </Modal>
-  );
-}
-
-function OrderForm({ form, setForm, data, stores, onSave, onClose }) {
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
-  return (
-    <Modal title={form.id ? "叫貨明細" : "新增叫貨"} onClose={onClose} width={760}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-        <Field label="叫貨日期" required><DateInput value={form.date} onChange={set("date")} /></Field>
-        <Field label="使用門店" required>
-          <select className="pl-input" value={form.storeId} onChange={set("storeId")}>
-            <option value="">選擇</option>{stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </Field>
-        <Field label="廠商" required>
-          <select className="pl-input" value={form.vendorId} onChange={set("vendorId")}>
-            <option value="">選擇廠商</option>{data.vendors.filter(v=>v.active).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-        </Field>
-        <Field label="品項說明" required span={2}><input className="pl-input" value={form.items} onChange={set("items")} placeholder="例：衣索比亞水洗 30kg" /></Field>
-        <Field label="金額" required><input className="pl-input" inputMode="decimal" value={form.amount} onChange={set("amount")} placeholder="0" /></Field>
-        <Field label="結帳方式">
-          <select className="pl-input" value={form.billing} onChange={set("billing")}>
-            {ORDER_BILLING.map((b) => <option key={b}>{b}</option>)}
-          </select>
-        </Field>
-        <Field label="預計付款日" required={form.billing === "月結"}><DateInput value={form.dueDate} onChange={set("dueDate")} /></Field>
-        <Field label="實際付款日"><DateInput value={form.paidDate} onChange={set("paidDate")} /></Field>
-        <Field label="付款狀態">
-          <select className="pl-input" value={form.payStatus} onChange={set("payStatus")}>
-            {ORDER_PAY_STATUS.map((s) => <option key={s}>{s}</option>)}
-          </select>
-        </Field>
-        <Field label="發票狀態">
-          <select className="pl-input" value={form.invoiceStatus} onChange={set("invoiceStatus")}>
-            {INVOICE_STATUS.map((s) => <option key={s}>{s}</option>)}
-          </select>
-        </Field>
-        {form.billing === "月結" ? (
-          <Field label="單據／憑證" span={2}>
-            <span style={{ fontSize: 13, color: T.sub }}>月結叫貨的憑證於「月結對帳」登錄廠商統一發票，這裡不用個別上傳</span>
-          </Field>
-        ) : (
-          <DocumentField docType={form.docType} noDocReason={form.noDocReason} attachment={form.attachment}
-            onChange={(patch) => setForm({ ...form, ...patch })} />
-        )}
-        <Field label="備註" span={2}><input className="pl-input" value={form.note} onChange={set("note")} /></Field>
-      </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-        <button className="pl-btn" onClick={onClose}>取消</button>
-        <button className="pl-btn primary" onClick={() => onSave(form)}>儲存</button>
-      </div>
-    </Modal>
   );
 }
 
@@ -3839,7 +3752,8 @@ function VendorMaster({ data, update }) {
     }
     setEditing(null);
   };
-  const usageOf = (v) => data.orders.filter((o) => o.vendorId === v.id).length + data.expenses.filter((e) => e.vendorId === v.id).length;
+  const usageOf = (v) => data.orders.filter((o) => o.vendorId === v.id).length + data.expenses.filter((e) => e.vendorId === v.id).length
+    + (data.vendorSettlements || []).filter((s) => s.vendorId === v.id).length;
   const remove = (v) => {
     const n = usageOf(v);
     if (n > 0) return alert(`「${v.name}」使用中（共 ${n} 筆叫貨／支出關聯），無法刪除。若不再合作可改為停用。`);
@@ -4940,7 +4854,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   const curStore = stores.some((s) => s.id === storeTab) ? storeTab : (stores[0]?.id || "");
   const [date, setDate] = usePersisted("pl_daily_date", todayStr());
   const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || "—";
-  const venOf = (id) => data.vendors.find((v) => v.id === id)?.name || "—";
   const catOf = (id) => data.categories.find((c) => c.id === id)?.name || "—";
   const incCatOf = (id) => (data.incomeCategories || []).find((c) => c.id === id)?.name || "—";
   const userName = (id) => users.find((u) => u.id === id)?.name || "—";
@@ -4993,10 +4906,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   /* ── 當日已記錄清單（中山門市自己） ── */
   const dayExp = data.expenses.filter((r) => r.date === date && r.storeId === curStore && perm.canSeeRecord(user, r)).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
   const dayInc = (data.incomes || []).filter((r) => r.date === date && r.storeId === curStore && perm.canSeeRecord(user, r));
-  const dayOrd = data.orders.filter((r) => r.date === date && r.storeId === curStore);
   const expSum = dayExp.reduce((a, r) => a + num(r.amount), 0);
   const incSum = dayInc.reduce((a, r) => a + num(r.amount), 0);
-  const ordSum = dayOrd.reduce((a, r) => a + num(r.amount), 0);
 
   /* ── 當日已記錄清單（烘豆場，若中山店底下有烘豆場才會有資料） ── */
   const roastDayExp = roastStore ? data.expenses.filter((r) => r.date === date && r.storeId === roastStore.id && perm.canSeeRecord(user, r)).sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")) : [];
@@ -5009,11 +4920,11 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     update((d) => ({ ...d, [key]: d[key].map((r) => r.id === rec.id ? { ...r, status: "待審核" } : r) }));
   };
   const delRec = (kind, rec) => {
-    const label = kind === "exp" ? "支出" : kind === "inc" ? "收入" : "叫貨";
-    if (kind !== "ord" && rec.status === "過審" && !perm.isAdmin(user)) return alert(`過審的${label}無法刪除。`);
-    if (!confirm(`確定刪除${label}「${rec.item || rec.items || ""}」？`)) return;
-    const key = kind === "exp" ? "expenses" : kind === "inc" ? "incomes" : "orders";
-    logAudit(kind === "exp" ? "每日支出" : kind === "inc" ? "門店收入" : "廠商叫貨", rec.id, rec, { ...rec, deleted: true });
+    const label = kind === "exp" ? "支出" : "收入";
+    if (rec.status === "過審" && !perm.isAdmin(user)) return alert(`過審的${label}無法刪除。`);
+    if (!confirm(`確定刪除${label}「${rec.item || ""}」？`)) return;
+    const key = kind === "exp" ? "expenses" : "incomes";
+    logAudit(kind === "exp" ? "每日支出" : "門店收入", rec.id, rec, { ...rec, deleted: true });
     update((d) => ({ ...d, [key]: d[key].filter((r) => r.id !== rec.id) }));
   };
 
@@ -5033,27 +4944,21 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
   /* ── 本次新增（尚未送出，先暫存在畫面上，可自由增減列）：中山門市與烘豆場各自獨立一份 ── */
   const blankExp = () => ({ key: uid("d"), categoryName: "", item: "", vendorId: "", amount: "", payMethod: "現金" });
   const blankInc = () => ({ key: uid("d"), categoryName: "", item: "", amount: "", payMethod: "現金" });
-  const blankOrd = () => ({ key: uid("d"), vendorId: "", items: "", amount: "", billing: "現結", dueDate: "", docType: "", noDocReason: "" });
   const [expRows, setExpRows] = useState([blankExp()]);
   const [incRows, setIncRows] = useState([blankInc()]);
-  const [ordRows, setOrdRows] = useState([blankOrd()]);
   const [roastExpRows, setRoastExpRows] = useState([blankExp()]);
   const [roastIncRows, setRoastIncRows] = useState([blankInc()]);
   const setExpRow = (key, k, v) => setExpRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setIncRow = (key, k, v) => setIncRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
-  const setOrdRow = (key, k, v) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setRoastExpRow = (key, k, v) => setRoastExpRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
   const setRoastIncRow = (key, k, v) => setRoastIncRows((rows) => rows.map((r) => r.key === key ? { ...r, [k]: v } : r));
-  const patchOrdRow = (key, patch) => setOrdRows((rows) => rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const delExpRow = (key) => setExpRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankExp()]);
   const delIncRow = (key) => setIncRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankInc()]);
-  const delOrdRow = (key) => setOrdRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankOrd()]);
   const delRoastExpRow = (key) => setRoastExpRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankExp()]);
   const delRoastIncRow = (key) => setRoastIncRows((rows) => rows.length > 1 ? rows.filter((r) => r.key !== key) : [blankInc()]);
 
   const filledExp = expRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
   const filledInc = incRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
-  const filledOrd = ordRows.filter((r) => r.vendorId || r.items.trim() || num(r.amount) > 0);
   const filledRoastExp = roastExpRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
   const filledRoastInc = roastIncRows.filter((r) => r.categoryName.trim() || r.item.trim() || num(r.amount) > 0);
 
@@ -5090,22 +4995,12 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       if (!r.item.trim()) return alert("烘豆場收入：請填寫項目");
       if (!(num(r.amount) > 0)) return alert("烘豆場收入：金額需大於 0");
     }
-    for (const r of filledOrd) {
-      if (!r.vendorId) return alert("叫貨：請選擇廠商");
-      if (!(num(r.amount) > 0)) return alert("叫貨：金額需大於 0");
-      if (r.billing === "月結" && !r.dueDate) return alert("叫貨：月結需填寫預計付款日");
-      if (r.billing !== "月結") {
-        const docErr = validateDoc(r);
-        if (docErr) return alert(`叫貨：${docErr}`);
-      }
-    }
-
     const salesFilled = sf && !salesLocked && (num(sf.pos) > 0 || Object.values(sf.pay || {}).some((v) => num(v) > 0));
     if (salesFilled) {
       const c = calcSales(sf);
       if (c.cash < 0 && !sf.diffReason.trim()) return alert("日結營收：非現金合計超過營業額，請填寫差異原因。");
     }
-    if (!salesFilled && filledExp.length === 0 && filledInc.length === 0 && filledOrd.length === 0
+    if (!salesFilled && filledExp.length === 0 && filledInc.length === 0
       && filledRoastExp.length === 0 && filledRoastInc.length === 0) {
       return alert("尚未輸入任何資料。");
     }
@@ -5148,15 +5043,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
         status: "過審", createdBy: user.id, createdAt: nowStamp(), reviewedBy: null, reviewedAt: null,
       };
     });
-    const ordRecs = filledOrd.map((r) => ({
-      id: uid("po"), date, storeId: curStore, vendorId: r.vendorId, items: r.items,
-      amount: num(r.amount), billing: r.billing, dueDate: r.billing === "月結" ? r.dueDate : "",
-      paidDate: r.billing === "現結" ? date : "", payStatus: r.billing === "現結" ? "已付款" : "未付款",
-      invoiceStatus: "未收到", invoiceNo: "", attachment: null,
-      docType: r.billing !== "月結" ? r.docType : "", noDocReason: r.billing !== "月結" && r.docType === NO_DOC ? r.noDocReason.trim() : "",
-      note: "", createdBy: user.id,
-    }));
-
     let salesRec = null;
     if (salesFilled) {
       salesRec = { ...sf, date, storeId: curStore, status: "已審核", reviewedBy: user.id, reviewedAt: nowStamp() };
@@ -5201,7 +5087,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       salesFilled && "日結營收",
       totalExpCount && `支出 ${totalExpCount} 筆${roastExpRecs.length ? `（含烘豆場 ${roastExpRecs.length} 筆）` : ""}${dayWasLocked ? "（日結後新增）" : ""}`,
       totalIncCount && `收入 ${totalIncCount} 筆${roastIncRecs.length ? `（含烘豆場 ${roastIncRecs.length} 筆）` : ""}${dayWasLocked ? "（日結後新增）" : ""}`,
-      ordRecs.length && `叫貨 ${ordRecs.length} 筆`,
     ].filter(Boolean).join("、");
     const confirmMsg = `確定送出今日資料？（${parts}）` + (newCatNames.length ? `\n將自動新增類別：${newCatNames.join("、")}` : "")
       + (dayWasLocked && (totalExpCount || totalIncCount) ? `\n\n注意：當日日結已完成並鎖定現金推算，本次新增的支出／收入將標示為「日結後新增」，不會納入現金推算，除非後續執行「重新開啟日結／重新結帳」。` : "");
@@ -5215,7 +5100,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       incomeCategories: newIncCats.length ? [...(d.incomeCategories || []), ...newIncCats] : d.incomeCategories,
       expenses: allExpRecs.length ? [...d.expenses, ...allExpRecs] : d.expenses,
       incomes: allIncRecs.length ? [...(d.incomes || []), ...allIncRecs] : d.incomes,
-      orders: ordRecs.length ? [...d.orders, ...ordRecs] : d.orders,
       dailySales: !salesRec ? d.dailySales
         : existing ? d.dailySales.map((r) => r.id === salesRec.id ? salesRec : r)
         : [...d.dailySales, salesRec],
@@ -5225,7 +5109,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
     setIncRows([blankInc()]);
     setRoastExpRows([blankExp()]);
     setRoastIncRows([blankInc()]);
-    setOrdRows([blankOrd()]);
   };
 
   if (!sf) return null;
@@ -5240,7 +5123,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{right}</div>
     </div>
   );
-  const totalNewItems = filledExp.length + filledInc.length + filledOrd.length + filledRoastExp.length + filledRoastInc.length;
+  const totalNewItems = filledExp.length + filledInc.length + filledRoastExp.length + filledRoastInc.length;
 
   /* 現金（推算）＝每日對帳資訊，獨立於日結營收區塊。日結一旦完成送出即鎖定當時的現金推算，
      之後不再自動重新計算；未完成日結前則即時試算（含本次尚未送出的新增支出／收入），
@@ -5518,63 +5401,6 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
           <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setRoastIncRows([...roastIncRows, blankInc()])}>＋ 新增一列</button>
         </div>
       )}
-
-      {/* ④ 當日叫貨 */}
-      <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-        {cardHead(`④ 當日叫貨（已記錄 ${dayOrd.length} 筆・${fmt(ordSum)}）`, null)}
-        {dayOrd.length > 0 && (
-          <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
-            <table className="pl-table">
-              <thead><tr><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>結帳</th><th>預計付款日</th><th>付款狀態</th><th></th></tr></thead>
-              <tbody>
-                {dayOrd.map((r) => (
-                  <tr key={r.id}>
-                    <td>{venOf(r.vendorId)}</td><td>{r.items}</td>
-                    <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
-                    <td>{r.billing}</td><td>{r.dueDate || "—"}</td>
-                    <td><Badge text={r.payStatus} tone={r.payStatus === "已付款" ? "green" : "yellow"} /></td>
-                    <td><button className="pl-btn small danger" onClick={() => delRec("ord", r)}>刪除</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <div style={{ fontSize: 12.5, color: T.sub, marginBottom: 8 }}>本次新增（尚未送出）</div>
-        <div className="pl-scroll-x">
-          <table className="pl-table">
-            <thead><tr><th>廠商</th><th>品項說明</th><th className="num">金額</th><th>結帳</th><th>預計付款日</th><th>單據／憑證</th><th></th></tr></thead>
-            <tbody>
-              {ordRows.map((r) => (
-                <tr key={r.key}>
-                  <td style={{ minWidth: 120 }}>
-                    <select className="pl-input" value={r.vendorId} onChange={(e) => setOrdRow(r.key, "vendorId", e.target.value)}>
-                      <option value="">廠商</option>{data.vendors.filter((v) => v.active !== false).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                    </select>
-                  </td>
-                  <td style={{ minWidth: 150 }}><input className="pl-input" placeholder="品項說明" value={r.items} onChange={(e) => setOrdRow(r.key, "items", e.target.value)} /></td>
-                  <td style={{ minWidth: 90 }}><input className="pl-input" style={{ textAlign: "right" }} placeholder="金額" inputMode="decimal" value={r.amount} onChange={(e) => setOrdRow(r.key, "amount", e.target.value)} /></td>
-                  <td style={{ minWidth: 90 }}>
-                    <select className="pl-input" value={r.billing} onChange={(e) => setOrdRow(r.key, "billing", e.target.value)}>
-                      {ORDER_BILLING.map((b) => <option key={b}>{b}</option>)}
-                    </select>
-                  </td>
-                  <td style={{ minWidth: 110 }}>
-                    {r.billing === "月結"
-                      ? <DateInput value={r.dueDate} onChange={(e) => setOrdRow(r.key, "dueDate", e.target.value)} />
-                      : <span style={{ color: T.sub, fontSize: 12.5 }}>現結・當日付清</span>}
-                  </td>
-                  {r.billing === "月結"
-                    ? <td style={{ fontSize: 12.5, color: T.sub, minWidth: 140 }}>月結憑證於「月結對帳」登錄統一發票</td>
-                    : <DocTypeCell docType={r.docType} noDocReason={r.noDocReason} onChange={(patch) => patchOrdRow(r.key, patch)} />}
-                  <td><button className="pl-btn small danger" onClick={() => delOrdRow(r.key)}>✕</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <button className="pl-btn small" style={{ marginTop: 8 }} onClick={() => setOrdRows([...ordRows, blankOrd()])}>＋ 新增一列</button>
-      </div>
 
       {/* ⑤ 現金（推算）── 每日對帳資訊，獨立於日結營收之外；日結完成送出後即鎖定，不因後續補登資料而改變 */}
       <div className="pl-card" style={{ padding: 16, marginBottom: 14, borderTop: `3px solid ${T.green}` }}>
@@ -7244,6 +7070,12 @@ function App() {
         /* 廠商分區（門市／生豆）：既有廠商若還沒有 category，依名稱猜測補上，
            之後可在主檔管理／廠商主檔手動調整 */
         stored.vendors = (stored.vendors || []).map((v) => v.category ? v : { ...v, category: guessVendorCategory(v.name) });
+        /* 廠商月結重構（2026/08 上線）：新增兩張表，不搬移既有 orders／payables 資料進去──
+           payables 完全沒有分次付款金額／日期資料，若自動生成「全額已付」的付款紀錄等於
+           捏造付款紀錄，因此舊資料一律維持原樣、唯讀顯示，改由使用者到新版廠商月結頁面
+           人工核對後手動重建 */
+        if (!stored.vendorSettlements) stored.vendorSettlements = [];
+        if (!stored.vendorPayments) stored.vendorPayments = [];
         delete stored.users; delete stored.currentUserId; // 舊資料殘留欄位，使用者現改由 profiles 提供
         setData(stored);
         /* 上面這些都是登入當下對資料做的搬遷／補值（新類別、改名、去重……），一定要立刻存回
