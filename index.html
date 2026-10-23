@@ -5193,8 +5193,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       </div>
 
       {/* ② 當日支出 */}
-      <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-        {cardHead(`② 當日支出${roastStore ? "・" + nameOf(curStore) : ""}（已記錄 ${dayExp.length} 筆・${fmt(expSum)}）`, null)}
+      <div className="pl-card" style={{ padding: 16, marginBottom: 14, borderTop: `3px solid ${T.brown}` }}>
+        {cardHead(<span style={{ color: T.brown }}>{`② 當日支出${roastStore ? "・" + nameOf(curStore) : ""}（已記錄 ${dayExp.length} 筆・${fmt(expSum)}）`}</span>, null)}
         {dayExp.length > 0 && (
           <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
             <table className="pl-table">
@@ -5203,7 +5203,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                 {dayExp.map((r) => (
                   <tr key={r.id}>
                     <td>{catOf(r.categoryId)}</td><td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
-                    <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+                    <td className="num" style={{ fontWeight: 600, color: T.brown }}>{fmtN(r.amount)}</td>
                     <td>{r.payMethod}</td><td>{r.payer}</td>
                     <td><Badge text={r.status} /></td>
                     <td style={{ whiteSpace: "nowrap" }}>
@@ -5246,8 +5246,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
 
       {/* ② 當日支出・烘豆場（中山店底下有烘豆場時才顯示，跟每日收支頁面「中山門市＋烘豆場」的呈現方式一致） */}
       {roastStore && (
-        <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-          {cardHead(`② 當日支出・${roastStore.name}（已記錄 ${roastDayExp.length} 筆・${fmt(roastExpSum)}）`, null)}
+        <div className="pl-card" style={{ padding: 16, marginBottom: 14, borderTop: `3px solid ${T.brown}` }}>
+          {cardHead(<span style={{ color: T.brown }}>{`② 當日支出・${roastStore.name}（已記錄 ${roastDayExp.length} 筆・${fmt(roastExpSum)}）`}</span>, null)}
           {roastDayExp.length > 0 && (
             <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
               <table className="pl-table">
@@ -5256,7 +5256,7 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
                   {roastDayExp.map((r) => (
                     <tr key={r.id}>
                       <td>{catOf(r.categoryId)}</td><td>{r.item}{r.postClose && <> <Badge text="日結後新增" tone="yellow" /></>}</td>
-                      <td className="num" style={{ fontWeight: 600 }}>{fmtN(r.amount)}</td>
+                      <td className="num" style={{ fontWeight: 600, color: T.brown }}>{fmtN(r.amount)}</td>
                       <td>{r.payMethod}</td><td>{r.payer}</td>
                       <td><Badge text={r.status} /></td>
                       <td style={{ whiteSpace: "nowrap" }}>
@@ -5298,8 +5298,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
       )}
 
       {/* ③ 當日收入 */}
-      <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-        {cardHead(`③ 當日收入${roastStore ? "・" + nameOf(curStore) : ""}（已記錄 ${dayInc.length} 筆・${fmt(incSum)}）`, null)}
+      <div className="pl-card" style={{ padding: 16, marginBottom: 14, borderTop: `3px solid ${T.green}` }}>
+        {cardHead(<span style={{ color: T.green }}>{`③ 當日收入${roastStore ? "・" + nameOf(curStore) : ""}（已記錄 ${dayInc.length} 筆・${fmt(incSum)}）`}</span>, null)}
         {dayInc.length > 0 && (
           <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
             <table className="pl-table">
@@ -5351,8 +5351,8 @@ function DailyKeyModule({ data, update, user, users, logAudit, logApproval, goto
 
       {/* ③ 當日收入・烘豆場 */}
       {roastStore && (
-        <div className="pl-card" style={{ padding: 16, marginBottom: 14 }}>
-          {cardHead(`③ 當日收入・${roastStore.name}（已記錄 ${roastDayInc.length} 筆・${fmt(roastIncSum)}）`, null)}
+        <div className="pl-card" style={{ padding: 16, marginBottom: 14, borderTop: `3px solid ${T.green}` }}>
+          {cardHead(<span style={{ color: T.green }}>{`③ 當日收入・${roastStore.name}（已記錄 ${roastDayInc.length} 筆・${fmt(roastIncSum)}）`}</span>, null)}
           {roastDayInc.length > 0 && (
             <div className="pl-scroll-x" style={{ marginBottom: 14 }}>
               <table className="pl-table">
